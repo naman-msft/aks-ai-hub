@@ -1,7 +1,15 @@
-#!/bin/bash
-echo "Installing Python dependencies..."
-pip install --upgrade pip
-pip install Flask==2.3.3 Flask-CORS==4.0.0 openai==1.3.8 gunicorn==21.2.0 requests==2.31.0 python-dotenv==1.0.0 urllib3==2.0.7
+#!/usr/bin/env bash
+set -e
 
-echo "Starting the application..."
-gunicorn --bind 0.0.0.0:8000 --timeout 600 --workers 1 app:app
+echo "Installing Python deps…"
+pip install --upgrade pip
+pip install -r requirements.txt
+
+echo "Building React frontend…"
+npm install --prefix frontend
+npm run build --prefix frontend
+
+# pick up the port from Azure
+PORT=${WEBSITES_PORT:-8000}
+echo "Starting gunicorn on 0.0.0.0:$PORT"
+exec gunicorn --bind 0.0.0.0:$PORT --timeout 600 --workers 1 app:app
