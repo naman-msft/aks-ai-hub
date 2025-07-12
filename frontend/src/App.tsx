@@ -94,7 +94,7 @@ function App() {
 
     try {
       // First, parse the email
-      const parseResponse = await fetch('http://localhost:5000/api/parse-email', {
+      const parseResponse = await fetch('/api/parse-email', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,7 +111,7 @@ function App() {
       setContext(parseData.context);
 
       // Then, generate AI response with streaming
-      const response = await fetch('http://localhost:5000/api/generate-response', {
+      const response = await fetch('/api/generate-response', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -196,7 +196,7 @@ function App() {
       setTimeout(() => addLog('Assessing professional tone and citations...'), 2000);
       setTimeout(() => addLog('Generating detailed analysis...'), 2500);
 
-      const response = await fetch('http://localhost:5000/api/evaluate', {
+      const response = await fetch('/api/evaluate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
