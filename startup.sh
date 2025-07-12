@@ -1,2 +1,7 @@
 #!/bin/bash
-gunicorn --bind 0.0.0.0:$PORT --timeout 600 app:app
+echo "Installing Python dependencies..."
+pip install --upgrade pip
+pip install Flask==2.3.3 Flask-CORS==4.0.0 openai==1.3.8 gunicorn==21.2.0 requests==2.31.0 python-dotenv==1.0.0 urllib3==2.0.7
+
+echo "Starting the application..."
+gunicorn --bind 0.0.0.0:8000 --timeout 600 --workers 1 app:app
