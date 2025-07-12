@@ -1834,6 +1834,69 @@ class AKSWikiAssistant:
         
         return self.vector_store_id
 
+    def generate_response(self, question: str, context: str = ""):
+        """Generate a streaming response to a question"""
+        try:
+            # Create a temporary thread for this question
+            thread = self.client.beta.threads.create(
+                tool_resources={
+                    "file_search": {
+                        "vector_store_ids": [self.vector_store_id]
+                    }
+                }
+            )
+            
+            # Add the question with context
+            full_question = f"{question}\n\nContext: {context}" if context else question
+            
+            self.client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=full_question
+            )
+            
+            # Run the assistant with streaming
+            run = self.client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=self.assistant_id,
+                instructions="""You are an expert in AKS (Azure Kubernetes Service) support. 
+                Provide a comprehensive, technically accurate response to this customer question.
+                Use the documentation to provide specific guidance and actionable steps.
+                Include relevant references and be professional in your tone.
+                Format your response as plain text suitable for email, do not give any markdown formatting at all.""",
+                tools=[{"type": "file_search"}],
+                stream=True
+            )
+            
+            response_content = ""
+            
+            for event in run:
+                if event.event == 'thread.message.delta':
+                    for content in event.data.delta.content:
+                        if hasattr(content, 'text') and hasattr(content.text, 'value'):
+                            chunk = content.text.value
+                            response_content += chunk
+                            yield chunk
+                elif event.event == 'thread.run.completed':
+                    # Process final content with citations
+                    messages = self.client.beta.threads.messages.list(thread_id=thread.id)
+                    for message in messages:
+                        if message.role == "assistant":
+                            for content in message.content:
+                                if hasattr(content, 'text'):
+                                    text_content = content.text.value
+                                    annotations = getattr(content.text, 'annotations', [])
+                                    final_content = self.process_citations(text_content, annotations)
+                                    
+                                    # Send any remaining content
+                                    if len(final_content) > len(response_content):
+                                        remaining = final_content[len(response_content):]
+                                        yield remaining
+                                    return
+            
+        except Exception as e:
+            yield f"Error generating response: {str(e)}"
+            
     def check_wiki_coverage(self) -> None:
         """Check how much of the eligible wiki content hasn't been scraped"""
         print(f"\n🔍 Checking wiki coverage...")

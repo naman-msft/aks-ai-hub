@@ -69,6 +69,8 @@ function App() {
   const aiResponseRef = useRef<HTMLDivElement>(null);
   const [isQuestionCollapsed, setIsQuestionCollapsed] = useState(false);
 
+// ...existing code...
+
   const parseEmailAndGenerateResponse = async () => {
     if (!emailContent.trim()) {
       setError('Please paste an email to parse');
@@ -97,7 +99,7 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ email_content: emailContent }),
+        body: JSON.stringify({ email_text: emailContent }),
       });
 
       if (!parseResponse.ok) {
@@ -109,7 +111,7 @@ function App() {
       setContext(parseData.context);
 
       // Then, generate AI response with streaming
-      const response = await fetch('http://localhost:5000/api/generate-ai-response-stream', {
+      const response = await fetch('http://localhost:5000/api/generate-response', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -144,9 +146,12 @@ function App() {
                   fullResponse += data.content;
                   setStreamingResponse(fullResponse);
                 }
-                if (data.done) {
+                if (data.status === 'complete') {
                   setAiResponse(fullResponse);
                   setIsStreaming(false);
+                }
+                if (data.error) {
+                  throw new Error(data.error);
                 }
               } catch (e) {
                 // Ignore JSON parse errors for malformed chunks
@@ -158,7 +163,6 @@ function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to process request');
       setStep('input');
-      setIsStreaming(false);
     } finally {
       setLoading(false);
     }
@@ -185,11 +189,12 @@ function App() {
       addLog('Starting evaluation process...');
       addLog('Preparing responses for comparison...');
       
-      setTimeout(() => addLog('Analyzing response quality...'), 1000);
-      setTimeout(() => addLog('Calculating technical accuracy scores...'), 2000);
-      setTimeout(() => addLog('Evaluating completeness and clarity...'), 3000);
-      setTimeout(() => addLog('Assessing professional tone and citations...'), 4000);
-      setTimeout(() => addLog('Generating detailed analysis...'), 5000);
+      // Add some simulated progress logs
+      setTimeout(() => addLog('Analyzing response quality...'), 500);
+      setTimeout(() => addLog('Calculating technical accuracy scores...'), 1000);
+      setTimeout(() => addLog('Evaluating completeness and clarity...'), 1500);
+      setTimeout(() => addLog('Assessing professional tone and citations...'), 2000);
+      setTimeout(() => addLog('Generating detailed analysis...'), 2500);
 
       const response = await fetch('http://localhost:5000/api/evaluate', {
         method: 'POST',
@@ -274,7 +279,7 @@ function App() {
           <div className="text-center mb-8">
             <div className="flex items-center justify-center mb-4">
               <Brain className="h-10 w-10 text-blue-600 mr-3" />
-              <h1 className="text-4xl font-bold text-gray-900">AKSAI Hub</h1>
+              <h1 className="text-4xl font-bold text-gray-900">AKS AI Hub</h1>
             </div>
             <p className="text-lg text-gray-600">
               Multi-assistant AI platform for various productivity tasks
