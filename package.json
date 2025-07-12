@@ -1,0 +1,20 @@
+{
+  "name": "aksai-hub",
+  "version": "1.0.0",
+  "description": "AKSAI Hub - Multi-assistant AI platform for various productivity tasks",
+  "main": "app.py",
+  "scripts": {
+    "start": "python app.py",
+    "dev": "python app.py",
+    "install-frontend": "cd frontend && npm install",
+    "build-frontend": "cd frontend && npm run build",
+    "frontend": "cd frontend && npm start"
+  },
+  "keywords": ["ai", "assistant", "hub", "platform", "aks", "azure", "kubernetes", "prd", "documentation"],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "python": ">=3.11.0"
+  }
+}

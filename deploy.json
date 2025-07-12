@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "build": {
+    "commands": [
+      "cd frontend && npm install && npm run build",
+      "pip install -r requirements.txt"
+    ]
+  },
+  "run": {
+    "command": "python app.py"
+  }
+}
