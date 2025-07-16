@@ -379,10 +379,11 @@ class AKSWikiAssistant:
         print("🔧 Creating new assistant...")
         try:
             assistant = self.client.beta.assistants.create(
-                name="AKS Documentation Expert",
-                instructions="""You are an expert in AKS (Azure Kubernetes Service) documentation. 
-                Use the provided documentation to answer technical questions accurately. 
-                ALWAYS include the link to the original documentation you referenced in your answer.
+                name="AKS Documentation Expert with Web Search",
+                instructions="""You are an expert in AKS (Azure Kubernetes Service) documentation and support. 
+                Use the provided documentation AND web search to answer technical questions accurately. 
+                ALWAYS include links to the original documentation you referenced in your answer.
+                When using web search, prioritize official Microsoft documentation and recent information.
                 Be concise but thorough. Format your responses with proper markdown.""",
                 model=self.deployment_name,
                 tools=[{"type": "file_search"}],
@@ -516,7 +517,7 @@ class AKSWikiAssistant:
         
         return message_content
     
-    def ask_question(self, question: str) -> None:
+    def ask_question(self, question: str, return_response: bool = False) -> str:
         """Ask a question to the assistant"""
         if not self.thread_id:
             thread = self.client.beta.threads.create(
@@ -540,13 +541,24 @@ class AKSWikiAssistant:
         run = self.client.beta.threads.runs.create_and_poll(
             thread_id=self.thread_id,
             assistant_id=self.assistant_id,
-            instructions="""You MUST search through the uploaded AKS documentation files to answer this question. 
-            DO NOT use general knowledge. 
-            ALWAYS cite the specific documents you reference using the file_search tool.
-            If you cannot find the information in the uploaded files, say "I could not find this information in the uploaded documentation."
-            """,
+            instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+
+SEARCH PRIORITY:
+1. Search the uploaded documentation files for official AKS guidance
+2. Use multiple search queries if needed to find comprehensive information
+3. Look for related topics and cross-references
+
+CITATION REQUIREMENTS:
+- ALWAYS cite specific documents you reference using the file_search tool
+- Include proper file names and relevant sections
+- Provide clear links to source documentation
+- If multiple sources cover the topic, synthesize the information
+
+FORMAT:
+- Clear answer with step-by-step guidance
+- All sources properly cited and linked
+- Include relevant examples and best practices from the documentation""",
             tools=[{"type": "file_search"}],
-            tool_choice={"type": "file_search"}  # Force it to use file search
         )
         
         if run.status == 'completed':
@@ -554,9 +566,6 @@ class AKSWikiAssistant:
             messages = self.client.beta.threads.messages.list(
                 thread_id=self.thread_id
             )
-            
-            # Get the latest assistant message
-            # Get the latest assistant message
             for message in messages:
                 if message.role == "assistant":
                     for content in message.content:
@@ -567,8 +576,11 @@ class AKSWikiAssistant:
                             # Process citations
                             final_content = self.process_citations(text_content, annotations)
                             
-                            print(f"\n🤖 Assistant:\n{final_content}\n")
-                            return
+                            if return_response:
+                                return final_content
+                            else:
+                                print(f"\n🤖 Assistant:\n{final_content}\n")
+                                return final_content
         else:
             print(f"❌ Run failed with status: {run.status}")
 
@@ -2043,15 +2055,20 @@ def main():
     
     # In main(), replace the setup section with:
     if args.setup or args.ask or args.interactive:
-        if not os.path.exists(args.wiki_path):
-            print(f"❌ Wiki path '{args.wiki_path}' not found.")
-            print(f"💡 Make sure you've downloaded the wiki first using --download")
-            sys.exit(1)
+        # Comment out the wiki processing check
+        # if not os.path.exists(args.wiki_path):
+        #     print(f"❌ Wiki path '{args.wiki_path}' not found.")
+        #     print(f"💡 Make sure you've downloaded the wiki first using --download")
+        #     sys.exit(1)
         
-        # Use incremental vector store instead
-        assistant.create_incremental_vector_store(args.wiki_path, args.subpath)
-        if not assistant.vector_store_id:
-            print("❌ Failed to create vector store")
+        # Load vector store from file
+        if os.path.exists(VECTOR_STORE_FILE):
+            with open(VECTOR_STORE_FILE, 'r') as f:
+                data = json.load(f)
+                assistant.vector_store_id = data['vector_store_id']
+                print(f"✅ Using existing vector store: {assistant.vector_store_id}")
+        else:
+            print("❌ No vector store found. Run --setup first.")
             sys.exit(1)
             
         assistant.create_or_load_assistant()
@@ -2117,8 +2134,8 @@ def main():
             sys.exit(1)
         return
     
-    # Setup vector store and assistant
-    if args.setup or args.ask or args.interactive:
+    # For setup, we need the wiki path
+    if args.setup:
         if not os.path.exists(args.wiki_path):
             print(f"❌ Wiki path '{args.wiki_path}' not found.")
             print(f"💡 Make sure you've cloned the wiki repository to this location.")
