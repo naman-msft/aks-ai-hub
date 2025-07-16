@@ -105,14 +105,13 @@ def generate_response():
             yield "data: {\"status\": \"starting\"}\n\n"
             
             try:
-                # Use the same ask_question method as CLI
+                # Use the same ask_question method as CLI with streaming
                 full_question = f"{question}\n\nContext: {context}" if context else question
                 
-                # Create a thread and get the response directly
-                response_content = assistant.ask_question(full_question, return_response=True)
+                # Use streaming version
+                for chunk in assistant.ask_question(full_question, stream=True):
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
                 
-                # Send the complete response with citations
-                yield f"data: {json.dumps({'content': response_content})}\n\n"
                 yield "data: {\"status\": \"complete\"}\n\n"
                 
             except Exception as e:

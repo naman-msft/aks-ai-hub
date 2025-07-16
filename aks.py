@@ -496,28 +496,28 @@ class AKSWikiAssistant:
                 if citation_key not in unique_citations:
                     unique_citations[citation_key] = len(citations)
                     
-                    # Create citation with public URL if available
+                    # Create citation with HTML links
                     if public_url:
-                        citation_text = f"[{len(citations)}] [{display_name}]({public_url})"
+                        citation_text = f'[{len(citations)}] <a href="{public_url}" target="_blank">{display_name}</a>'
                     else:
                         # Fallback to just the display name without URL
                         citation_text = f"[{len(citations)}] {display_name}"
                     
                     if quote != "Document" and quote:
-                        citation_text += f"\n> {preview_text}"
+                        citation_text += f"<br><blockquote>{preview_text}</blockquote>"
                     citations.append(citation_text)
                 else:
                     # Replace with existing citation index
                     existing_index = unique_citations[citation_key]
                     message_content = message_content.replace(f"[{index}]", f"[{existing_index}]")
         
-        # Add citations at the end
+        # Add citations at the end with HTML formatting
         if citations:
-            message_content += "\n\n## Sources:\n" + "\n\n".join(citations)
+            message_content += "<br><br><strong>Sources:</strong><br>" + "<br><br>".join(citations)
         
         return message_content
-    
-    def ask_question(self, question: str, return_response: bool = False) -> str:
+
+    def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
         """Ask a question to the assistant"""
         if not self.thread_id:
             thread = self.client.beta.threads.create(
@@ -538,28 +538,80 @@ class AKSWikiAssistant:
         
         # Run the assistant with explicit file search
         print("🔄 Processing your question...")
-        run = self.client.beta.threads.runs.create_and_poll(
-            thread_id=self.thread_id,
-            assistant_id=self.assistant_id,
-            instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+        if stream:
+            run = self.client.beta.threads.runs.create(
+                thread_id=self.thread_id,
+                assistant_id=self.assistant_id,
+                instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
 
-SEARCH PRIORITY:
-1. Search the uploaded documentation files for official AKS guidance
-2. Use multiple search queries if needed to find comprehensive information
-3. Look for related topics and cross-references
+        SEARCH PRIORITY:
+        1. Search the uploaded documentation files for official AKS guidance
+        2. Use multiple search queries if needed to find comprehensive information
+        3. Look for related topics and cross-references
 
-CITATION REQUIREMENTS:
-- ALWAYS cite specific documents you reference using the file_search tool
-- Include proper file names and relevant sections
-- Provide clear links to source documentation
-- If multiple sources cover the topic, synthesize the information
+        CITATION REQUIREMENTS:
+        - ALWAYS cite specific documents you reference using the file_search tool
+        - Include proper file names and relevant sections
+        - Provide clear links to source documentation
+        - If multiple sources cover the topic, synthesize the information
 
-FORMAT:
-- Clear answer with step-by-step guidance
-- All sources properly cited and linked
-- Include relevant examples and best practices from the documentation""",
-            tools=[{"type": "file_search"}],
-        )
+        FORMAT:
+        - Clear answer with step-by-step guidance
+        - Include relevant examples and best practices from the documentation""",
+                tools=[{"type": "file_search"}],
+                stream=True
+            )
+            
+            response_content = ""
+            
+            for event in run:
+                if event.event == 'thread.message.delta':
+                    for content in event.data.delta.content:
+                        if hasattr(content, 'text') and hasattr(content.text, 'value'):
+                            chunk = content.text.value
+                            response_content += chunk
+                            yield chunk
+                elif event.event == 'thread.run.completed':
+                    # Process final content with citations
+                    messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
+                    for message in messages:
+                        if message.role == "assistant":
+                            for content in message.content:
+                                if hasattr(content, 'text'):
+                                    text_content = content.text.value
+                                    annotations = getattr(content.text, 'annotations', [])
+                                    final_content = self.process_citations(text_content, annotations)
+                                    
+                                    # Send any remaining content
+                                    if len(final_content) > len(response_content):
+                                        remaining = final_content[len(response_content):]
+                                        yield remaining
+                                    return
+        else:
+            run = self.client.beta.threads.runs.create_and_poll(
+                thread_id=self.thread_id,
+                assistant_id=self.assistant_id,
+                instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+
+        SEARCH PRIORITY:
+        1. Search the uploaded documentation files for official AKS guidance
+        2. Use multiple search queries if needed to find comprehensive information
+        3. Look for related topics and cross-references
+
+        CITATION REQUIREMENTS:
+        - ALWAYS cite specific documents you reference using the file_search tool
+        - Include proper file names and relevant sections
+        - Provide clear links to source documentation
+        - If multiple sources cover the topic, synthesize the information
+
+        FORMAT:
+        - Clear answer with step-by-step guidance
+        - Use HTML links for citations: <a href="URL" target="_blank">Link Text</a>
+        - Use basic HTML formatting: <strong>bold</strong>, <em>italic</em>, <br> for line breaks
+        - Include relevant examples and best practices from the documentation
+        - Do not use markdown - use HTML formatting only""",
+                tools=[{"type": "file_search"}],
+            )
         
         if run.status == 'completed':
             # Get messages
