@@ -4,6 +4,8 @@ import os
 import sys
 import json
 import traceback
+# Add this import
+from prd_agent import PRDAgent
 
 app = Flask(__name__, static_folder='frontend/build', static_url_path='')
 CORS(app)
@@ -11,19 +13,20 @@ CORS(app)
 # Import all the API functionality
 from ai_grader import AIResponseGrader, AKSResponseTester
 from aks import AKSWikiAssistant
-
 # Initialize components
 assistant = None
 grader = None
 tester = None
+prd_agent = None
 
 def initialize_components():
-    global assistant, grader, tester
+    global assistant, grader, tester, prd_agent
     try:
         print("🚀 Initializing AKS Assistant...")
         assistant = AKSWikiAssistant()
         grader = AIResponseGrader()
         tester = AKSResponseTester(assistant, grader)
+        prd_agent = PRDAgent()
         
         # Load existing vector store and assistant
         if os.path.exists("vector_store_id.json"):
@@ -194,31 +197,22 @@ def evaluate_response():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
        
-# Add a dashboard endpoint for future assistant selection
 @app.route('/api/assistants', methods=['GET'])
 def get_assistants():
-    """Get list of available assistants"""
     assistants = [
         {
             "id": "aks-support",
             "name": "AKS Support Assistant",
             "description": "Generate responses to Azure Kubernetes Service customer emails",
-            "icon": "🚀",
+            "icon": "💬",
             "status": "active"
         },
         {
             "id": "prd-writer",
-            "name": "PRD Writer",
-            "description": "Generate Product Requirements Documents",
+            "name": "PRD Writer & Reviewer",
+            "description": "Create new PRDs or review existing Product Requirements Documents",
             "icon": "📝",
-            "status": "coming-soon"
-        },
-        {
-            "id": "doc-assistant",
-            "name": "Documentation Assistant",
-            "description": "Generate technical documentation and guides",
-            "icon": "📚",
-            "status": "coming-soon"
+            "status": "active"
         },
         {
             "id": "code-reviewer",
@@ -241,7 +235,71 @@ def serve_static_files(path):
         return send_from_directory(app.static_folder, path)
     else:
         return send_from_directory(app.static_folder, 'index.html')
+@app.route('/api/prd/create', methods=['POST'])
+def create_prd():
+    try:
+        # Initialize components if not already done
+        if not prd_agent:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        data = request.json
+        prompt = data.get('prompt', '')
+        context = data.get('context', '')
+        data_sources = data.get('data_sources', [])
+        
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+        
+        # Check if Azure OpenAI is configured
+        if not os.environ.get("AZURE_OPENAI_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
+        
+        result = prd_agent.create_prd(prompt, context, data_sources)
+        
+        if result.get("success"):
+            return jsonify({
+                "prd": result["prd"],
+                "message": "PRD created successfully"
+            })
+        else:
+            return jsonify({"error": result.get("error", "Unknown error occurred")}), 500
+            
+    except Exception as e:
+        print(f"Error creating PRD: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
+@app.route('/api/prd/review', methods=['POST'])
+def review_prd():
+    try:
+        # Initialize components if not already done
+        if not prd_agent:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        data = request.json
+        prd_text = data.get('prd_text', '')
+        
+        if not prd_text:
+            return jsonify({"error": "PRD text is required"}), 400
+        
+        # Check if Azure OpenAI is configured
+        if not os.environ.get("AZURE_OPENAI_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
+        
+        result = prd_agent.review_prd(prd_text)
+        
+        if result.get("success"):
+            return jsonify({
+                "review": result["review"],
+                "score": result["score"],
+                "message": "PRD reviewed successfully"
+            })
+        else:
+            return jsonify({"error": result.get("error", "Unknown error occurred")}), 500
+            
+    except Exception as e:
+        print(f"Error reviewing PRD: {str(e)}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+    
 if __name__ == '__main__':
     # Initialize components on startup
     initialize_components()

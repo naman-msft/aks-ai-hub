@@ -5,9 +5,13 @@ COPY frontend/package*.json frontend/
 RUN npm ci --prefix frontend
 COPY frontend/ frontend/
 RUN npm run build --prefix frontend
-
 # Python backend
 FROM python:3.11
+RUN apt-get update && apt-get install -y \
+    libxml2-dev \
+    libxslt1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install Python dependencies

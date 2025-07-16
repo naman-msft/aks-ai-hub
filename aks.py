@@ -29,7 +29,7 @@ class AKSWikiAssistant:
             api_version="2024-12-01-preview",
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )
-        self.deployment_name = 'gpt-4.1'
+        self.deployment_name = os.environ.get("AZURE_OPENAI_MODEL_EMAIL", "gpt-4.1")
         self.vector_store_id = None
         self.assistant_id = None
         self.thread_id = None
@@ -2150,7 +2150,7 @@ def main():
             organization="msazure",
             project="CloudNativeCompute",
             wiki_name="CloudNativeCompute.wiki",
-            pat="REDACTED_PAT",
+            pat=os.getenv("AZURE_DEVOPS_PAT", "your_pat_here"),
             subpage_path="/AKS",
             save_dir="./downloaded_wiki/AKS"
         )
@@ -2159,7 +2159,7 @@ def main():
     if args.resolve_guids:
         assistant.resolve_guids_in_existing_files(
             organization="msazure",
-            pat="REDACTED_PAT",
+            pat=os.getenv("AZURE_DEVOPS_PAT", "your_pat_here"),
             wiki_dir="./downloaded_wiki/AKS"
         )
         return
