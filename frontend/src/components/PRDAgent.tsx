@@ -1,4 +1,9 @@
 import React, { useState } from 'react';
+// @ts-ignore
+import ReactMarkdown from 'react-markdown';
+// @ts-ignore
+import remarkGfm from 'remark-gfm';
+import { WordExporter } from '../utils/wordExporter';
 import { 
   FileText, 
   MessageSquare, 
@@ -27,6 +32,130 @@ interface DataSource {
   status: 'ready' | 'processing' | 'error';
 }
 
+interface Section {
+  section_id: string;
+  title: string;
+  content: string;
+  order: number;
+  status: 'pending' | 'generating' | 'complete' | 'editing';
+  editContent?: string;
+}
+
+const preprocessMarkdown = (content: string): string => {
+  const lines = content.split('\n');
+  const processedLines: string[] = [];
+  let inTable = false;
+  let tableBuffer: string[][] = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+    
+    // Check if this looks like a table row
+    if (trimmedLine.includes('|') && !trimmedLine.match(/^\s*$/) && trimmedLine !== '|') {
+      // Parse cells
+      let cells = trimmedLine
+        .split('|')
+        .map(cell => cell.trim())
+        .filter((cell, index, arr) => {
+          // Keep cells that aren't empty, unless they're at the edges
+          return !(index === 0 || index === arr.length - 1) || cell !== '';
+        });
+      
+      // Remove empty edge cells if they exist
+      if (cells[0] === '') cells.shift();
+      if (cells[cells.length - 1] === '') cells.pop();
+      
+      // Skip separator rows
+      if (cells.every(cell => cell.match(/^[\-\s:]+$/))) {
+        if (tableBuffer.length === 1) {
+          // This is the separator after headers, add it
+          processedLines.push('| ' + tableBuffer[0].join(' | ') + ' |');
+          processedLines.push('|' + cells.map(() => ' --- ').join('|') + '|');
+          tableBuffer = [];
+          inTable = true;
+        }
+        continue;
+      }
+      
+      // Process each cell to handle inline markdown
+      cells = cells.map(cell => {
+        return cell
+          // Convert <br> tags to actual line breaks for markdown
+          .replace(/<br\s*\/?>/gi, '  \n')
+          // Handle bold text
+          .replace(/\*\*(.*?)\*\*/g, '**$1**')
+          // Handle lists
+          .replace(/^\s*[-•]\s+/gm, '• ')
+          // Clean up quotes
+          .replace(/[""]/g, '"')
+          .replace(/['']/g, "'");
+      });
+      
+      if (!inTable) {
+        // Start collecting table rows
+        tableBuffer.push(cells);
+      } else {
+        // Output the row directly
+        processedLines.push('| ' + cells.join(' | ') + ' |');
+      }
+    } else {
+      // Not a table line
+      if (tableBuffer.length > 0) {
+        // Output any buffered table content
+        if (tableBuffer.length === 1) {
+          // Single row, treat as headers
+          processedLines.push('| ' + tableBuffer[0].join(' | ') + ' |');
+          processedLines.push('|' + tableBuffer[0].map(() => ' --- ').join('|') + '|');
+        } else {
+          // Multiple rows
+          processedLines.push('| ' + tableBuffer[0].join(' | ') + ' |');
+          processedLines.push('|' + tableBuffer[0].map(() => ' --- ').join('|') + '|');
+          for (let j = 1; j < tableBuffer.length; j++) {
+            processedLines.push('| ' + tableBuffer[j].join(' | ') + ' |');
+          }
+        }
+        tableBuffer = [];
+      }
+      
+      inTable = false;
+      
+      // Process other markdown elements
+      let processedLine = line
+        .replace(/<br\s*\/?>/gi, '  \n')
+        .replace(/<ul>/gi, '')
+        .replace(/<\/ul>/gi, '')
+        .replace(/<li>/gi, '• ')
+        .replace(/<\/li>/gi, '')
+        .replace(/^\*\s+/gm, '• ')
+        .replace(/<[^>]*>/g, '');
+      
+      processedLines.push(processedLine);
+    }
+  }
+  
+  // Handle any remaining buffered table content
+  if (tableBuffer.length > 0) {
+    if (tableBuffer.length === 1) {
+      processedLines.push('| ' + tableBuffer[0].join(' | ') + ' |');
+      processedLines.push('|' + tableBuffer[0].map(() => ' --- ').join('|') + '|');
+    } else {
+      processedLines.push('| ' + tableBuffer[0].join(' | ') + ' |');
+      processedLines.push('|' + tableBuffer[0].map(() => ' --- ').join('|') + '|');
+      for (let j = 1; j < tableBuffer.length; j++) {
+        processedLines.push('| ' + tableBuffer[j].join(' | ') + ' |');
+      }
+    }
+  }
+  
+  return processedLines
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^(#{1,3}\s+.+)$/gm, '\n$1\n')
+    .trim();
+};
+
+
 const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
   const [step, setStep] = useState<'select' | 'create' | 'review' | 'data-sources'>('select');
   const [mode, setMode] = useState<'create' | 'review'>('create');
@@ -40,7 +169,56 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
   const [newUrl, setNewUrl] = useState('');
   const [newTextContent, setNewTextContent] = useState('');
   const [reviewMode, setReviewMode] = useState<'text' | 'file'>('text');
+  const [sections, setSections] = useState<Section[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
+  const [generationMode, setGenerationMode] = useState<'auto' | 'manual'>('auto'); // Add this
+  const [waitingForApproval, setWaitingForApproval] = useState(false); // Add this
 
+
+  // const createPRD = async () => {
+  //   if (!prompt.trim()) {
+  //     setError('Please enter a description for your PRD');
+  //     return;
+  //   }
+
+  //   setLoading(true);
+  //   setError(null);
+
+  //   try {
+  //     // Prepare context from data sources
+  //     const contextData = dataSources.map(ds => ({
+  //       type: ds.type,
+  //       name: ds.name,
+  //       content: ds.content
+  //     }));
+
+  //     const response = await fetch('/api/prd/create', {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //       },
+  //       body: JSON.stringify({
+  //         prompt: prompt,
+  //         context: 'AKS PRD creation',
+  //         data_sources: contextData
+  //       }),
+  //     });
+
+  //     if (!response.ok) {
+  //       const errorData = await response.json();
+  //       throw new Error(errorData.error || 'Failed to create PRD');
+  //     }
+
+  //     const data = await response.json();
+  //     setResult(data);
+  //     setStep('create');
+  //   } catch (err) {
+  //     setError(err instanceof Error ? err.message : 'Failed to create PRD');
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
   const createPRD = async () => {
     if (!prompt.trim()) {
       setError('Please enter a description for your PRD');
@@ -49,16 +227,19 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
 
     setLoading(true);
     setError(null);
+    setSections([]);
+    setIsStreaming(true);
+    setCurrentSectionIndex(0);  // Add this
+    setWaitingForApproval(false);  // Add this
 
     try {
-      // Prepare context from data sources
       const contextData = dataSources.map(ds => ({
         type: ds.type,
         name: ds.name,
         content: ds.content
       }));
 
-      const response = await fetch('/api/prd/create', {
+      const response = await fetch('/api/prd/create-stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -71,20 +252,200 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to create PRD');
+        throw new Error('Failed to create PRD');
       }
 
-      const data = await response.json();
-      setResult(data);
-      setStep('create');
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'section') {
+                setSections(prev => {
+                  const newSections = [...prev];
+                  const existingIndex = newSections.findIndex(s => s.section_id === data.section_id);
+                  
+                  if (existingIndex >= 0) {
+                    newSections[existingIndex] = {
+                      ...data,
+                      status: 'complete'
+                    };
+                  } else {
+                    newSections.push({
+                      ...data,
+                      status: 'complete'
+                    });
+                  }
+                  
+                  return newSections;
+                });
+                
+                setCurrentSectionIndex(prev => prev + 1);
+                
+                // If in manual mode, pause after each section
+                if (generationMode === 'manual') {
+                  setWaitingForApproval(true);
+                  setIsStreaming(false);
+                  // Close the reader to stop the stream
+                  reader.cancel();
+                  return; // Exit the function
+                }
+              } else if (data.type === 'complete') {
+                setIsStreaming(false);
+                setStep('create');
+              } else if (data.type === 'error') {
+                setError(data.error);
+                setIsStreaming(false);
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data:', e);
+            }
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create PRD');
+      setIsStreaming(false);
     } finally {
       setLoading(false);
     }
   };
+  const editSection = (sectionId: string) => {
+    setSections(prev => prev.map(s => 
+      s.section_id === sectionId 
+        ? { ...s, status: 'editing', editContent: s.content }
+        : s
+    ));
+  };
 
+  const saveSection = (sectionId: string) => {
+    setSections(prev => prev.map(s => 
+      s.section_id === sectionId 
+        ? { ...s, status: 'complete', content: s.editContent || s.content, editContent: undefined }
+        : s
+    ));
+  };
+
+  const cancelEdit = (sectionId: string) => {
+    setSections(prev => prev.map(s => 
+      s.section_id === sectionId 
+        ? { ...s, status: 'complete', editContent: undefined }
+        : s
+    ));
+  };
+  const continueGeneration = async () => {
+    setIsStreaming(true);
+    setWaitingForApproval(false);
+    
+    try {
+      // Get all current sections with potentially edited content
+      const previousSections = sections.reduce((acc, s) => {
+        acc[s.title] = s.content;
+        return acc;
+      }, {} as {[key: string]: string});
+      
+      const response = await fetch('/api/prd/continue-generation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prompt,
+          context: 'AKS PRD creation',
+          data_sources: dataSources.map(ds => ({
+            type: ds.type,
+            name: ds.name,
+            content: ds.content
+          })),
+          previous_sections: previousSections,
+          start_from_index: currentSectionIndex  // This should be the next section to generate
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to continue generation');
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      let firstSection = true;
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'section') {
+                setSections(prev => {
+                  const newSections = [...prev];
+                  const existingIndex = newSections.findIndex(s => s.section_id === data.section_id);
+                  
+                  if (existingIndex >= 0) {
+                    newSections[existingIndex] = {
+                      ...data,
+                      status: 'complete'
+                    };
+                  } else {
+                    newSections.push({
+                      ...data,
+                      status: 'complete'
+                    });
+                  }
+                  
+                  return newSections;
+                });
+                
+                setCurrentSectionIndex(prev => prev + 1);
+                
+                // If in manual mode and this is the first section of this continuation, pause
+                if (generationMode === 'manual' && firstSection) {
+                  firstSection = false;
+                  setWaitingForApproval(true);
+                  setIsStreaming(false);
+                  reader.cancel();
+                  return;
+                }
+              } else if (data.type === 'complete') {
+                setIsStreaming(false);
+              } else if (data.type === 'error') {
+                setError(data.error);
+                setIsStreaming(false);
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data:', e);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to continue generation');
+      setIsStreaming(false);
+    }
+  };  
   const reviewPRD = async () => {
     let prdContent = '';
     
@@ -178,13 +539,71 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
     }
   };
 
-  const copyToClipboard = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      alert('Copied to clipboard!');
-    } catch (err) {
-      setError('Failed to copy to clipboard');
+  const copyToClipboard = (text: string) => {
+    // If we have sections (from create mode), use rich formatting
+    if (sections && sections.length > 0) {
+      const richTextHtml = `
+        <html>
+          <body style="font-family: 'Aptos Body', 'Calibri', sans-serif; font-size: 11pt; line-height: 1.5;">
+            ${sections
+              .sort((a, b) => a.order - b.order)
+              .map(s => `
+                <h2 style="font-family: 'Aptos Display', 'Calibri', sans-serif; font-size: 14pt; color: #2b579a; margin-top: 18pt; margin-bottom: 6pt;">
+                  ${s.title}
+                </h2>
+                <div style="margin-bottom: 12pt;">
+                  ${convertMarkdownToHtml(s.content)}
+                </div>
+              `)
+              .join('<hr style="border: none; border-top: 1px solid #e0e0e0; margin: 18pt 0;">')}
+          </body>
+        </html>
+      `;
+      
+      const blob = new Blob([richTextHtml], { type: 'text/html' });
+      const clipboardItem = new ClipboardItem({ 'text/html': blob, 'text/plain': new Blob([text], { type: 'text/plain' }) });
+      
+      navigator.clipboard.write([clipboardItem]).then(() => {
+        alert('PRD copied to clipboard with formatting!');
+      }).catch(err => {
+        navigator.clipboard.writeText(text);
+        alert('PRD copied as plain text');
+      });
+    } else {
+      // Fallback to plain text copy
+      navigator.clipboard.writeText(text).then(() => {
+        alert('Content copied to clipboard!');
+      }).catch(err => {
+        console.error('Failed to copy:', err);
+        alert('Failed to copy to clipboard');
+      });
     }
+  };
+
+  const fixSectionFormatting = (sectionId: string) => {
+    setSections(prev => prev.map(s => {
+      if (s.section_id === sectionId) {
+        return {
+          ...s,
+          content: preprocessMarkdown(s.content)
+        };
+      }
+      return s;
+    }));
+  };
+
+  // Helper function to convert markdown to HTML
+  const convertMarkdownToHtml = (markdown: string): string => {
+    return markdown
+      .replace(/### (.*?)$/gm, '<h3 style="font-size: 12pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt;">$1</h3>')
+      .replace(/## (.*?)$/gm, '<h2 style="font-size: 13pt; font-weight: bold; margin-top: 12pt; margin-bottom: 6pt;">$1</h2>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/^- (.*?)$/gm, '<li>$1</li>')
+      .replace(/(<li>.*<\/li>\n?)+/g, '<ul style="margin-left: 20pt;">$&</ul>')
+      .replace(/\|([^|]+)\|([^|]+)\|/g, '<tr><td style="border: 1px solid #d0d0d0; padding: 6pt;">$1</td><td style="border: 1px solid #d0d0d0; padding: 6pt;">$2</td></tr>')
+      .replace(/(<tr>.*<\/tr>\n?)+/g, '<table style="border-collapse: collapse; width: 100%;">$&</table>')
+      .replace(/\n/g, '<br/>');
   };
 
   const resetForm = () => {
@@ -440,6 +859,35 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                   ← Back to Data Sources
                 </button>
               </div>
+
+              {/* Generation Mode Toggle */}
+              <div className="mb-4 p-4 bg-blue-50 rounded-lg">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Generation Mode
+                </label>
+                <div className="flex space-x-4">
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="radio"
+                      value="auto"
+                      checked={generationMode === 'auto'}
+                      onChange={(e) => setGenerationMode('auto')}
+                      className="mr-2"
+                    />
+                    <span className="text-sm">Auto (Generate all sections continuously)</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="radio"
+                      value="manual"
+                      checked={generationMode === 'manual'}
+                      onChange={(e) => setGenerationMode('manual')}
+                      className="mr-2"
+                    />
+                    <span className="text-sm">Manual (Review each section before continuing)</span>
+                  </label>
+                </div>
+              </div>    
               
               <div className="space-y-6">
                 <div>
@@ -493,33 +941,197 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                 </button>
               </div>
 
-              {/* PRD Result */}
-              {result && result.prd && (
+              {/* PRD Result with Sections */}
+              {sections.length > 0 && (
                 <div className="mt-8 border-t pt-8">
                   <div className="flex items-center justify-between mb-6">
-                    <h4 className="text-xl font-bold text-green-700">✅ PRD Created Successfully!</h4>
-                    <div className="flex items-center space-x-3">
-                      <button
-                        onClick={() => copyToClipboard(result.prd)}
-                        className="flex items-center px-4 py-2 text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
-                      >
-                        <Copy className="h-4 w-4 mr-2" />
-                        Copy PRD
-                      </button>
-                      <button
-                        onClick={() => {
-                          resetForm();
-                          setStep('select');
-                        }}
-                        className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        Create Another
-                      </button>
-                    </div>
+                    <h4 className="text-xl font-bold text-green-700">
+                      {isStreaming ? '⏳ Generating PRD...' : '✅ PRD Created Successfully!'}
+                    </h4>
+                    {!isStreaming && (
+                      <div className="flex space-x-3">
+                        <button
+                          onClick={() => {
+                            const fullPrd = sections
+                              .sort((a, b) => a.order - b.order)
+                              .map(s => `## ${s.title}\n\n${s.content}`)
+                              .join('\n\n---\n\n');
+                            navigator.clipboard.writeText(fullPrd).then(() => {
+                              alert('PRD copied to clipboard!');
+                            });
+                          }}
+                          className="flex items-center px-4 py-2 text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+                        >
+                          <Copy className="h-4 w-4 mr-2" />
+                          Copy as Text
+                        </button>
+                        <button
+                          onClick={() => {
+                            WordExporter.exportToWord(sections, prompt || 'Product Requirements Document');
+                          }}
+                          className="flex items-center px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                        >
+                          <FileText className="h-4 w-4 mr-2" />
+                          Export to Word
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-6 max-h-96 overflow-y-auto">
-                    <pre className="whitespace-pre-wrap text-sm font-mono">{result.prd}</pre>
+                  
+                  {/* Progress indicator */}
+                  {isStreaming && (
+                    <div className="mb-4">
+                      <div className="flex space-x-2">
+                        {Array.from({ length: 15 }).map((_, i) => (  // Change 5 to 15 for all sections
+                          <div
+                            key={i}
+                            className={`h-2 flex-1 rounded ${
+                              i < currentSectionIndex ? 'bg-green-500' : 'bg-gray-300'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Sections */}
+                  <div className="space-y-4">
+                    {sections.map((section) => (
+                      <div key={section.section_id} className="bg-gray-50 rounded-lg p-6">
+                        <div className="flex items-center justify-between mb-3">
+                          <h5 className="text-lg font-semibold">{section.title}</h5>
+                          <div className="flex space-x-2">
+                            <button
+                              onClick={() => fixSectionFormatting(section.section_id)}
+                              className="text-sm px-2 py-1 text-blue-600 hover:text-blue-800 border border-blue-200 rounded hover:bg-blue-50"
+                              title="Fix formatting issues"
+                            >
+                              Fix Format
+                            </button>
+                            <button
+                              onClick={() => editSection(section.section_id)}
+                              className="text-sm px-2 py-1 text-gray-600 hover:text-gray-800 border border-gray-200 rounded hover:bg-gray-50"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {section.status === 'editing' ? (
+                          <div>
+                            <textarea
+                              value={section.editContent}
+                              onChange={(e) => {
+                                setSections(prev => prev.map(s => 
+                                  s.section_id === section.section_id 
+                                    ? { ...s, editContent: e.target.value }
+                                    : s
+                                ));
+                              }}
+                              className="w-full p-3 border rounded-lg mb-2"
+                              rows={8}
+                            />
+                            <div className="flex space-x-2">
+                              <button
+                                onClick={() => saveSection(section.section_id)}
+                                className="px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => cancelEdit(section.section_id)}
+                                className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                          ) : (
+                            <div className="prose max-w-none">
+                              <ReactMarkdown 
+                                remarkPlugins={[remarkGfm]} // Add this if you haven't already imported it
+                                components={{
+                                  table: ({ children }) => (
+                                    <div className="overflow-x-auto my-4">
+                                      <table className="min-w-full border-collapse border border-gray-300">
+                                        {children}
+                                      </table>
+                                    </div>
+                                  ),
+                                  thead: ({ children }) => (
+                                    <thead className="bg-gray-100">{children}</thead>
+                                  ),
+                                  tbody: ({ children }) => (
+                                    <tbody className="divide-y divide-gray-200">{children}</tbody>
+                                  ),
+                                  tr: ({ children }) => (
+                                    <tr className="hover:bg-gray-50">{children}</tr>
+                                  ),
+                                  th: ({ children }) => (
+                                    <th className="px-4 py-3 text-left text-sm font-semibold text-gray-900 border border-gray-300">
+                                      {children}
+                                    </th>
+                                  ),
+                                  td: ({ children }) => (
+                                    <td className="px-4 py-3 text-sm text-gray-700 border border-gray-300 whitespace-pre-wrap">
+                                      {children}
+                                    </td>
+                                  ),
+                                  p: ({ children }) => (
+                                    <p className="mb-2">{children}</p>
+                                  ),
+                                  ul: ({ children }) => (
+                                    <ul className="list-disc pl-5 space-y-1">{children}</ul>
+                                  ),
+                                  li: ({ children }) => (
+                                    <li className="text-sm">{children}</li>
+                                  ),
+                                  strong: ({ children }) => (
+                                    <strong className="font-semibold text-gray-900">{children}</strong>
+                                  ),
+                                  br: () => <br />
+                                }}
+                              >
+                                {section.content}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                          {/* ADD IT HERE - Right after the ternary operator closes */}
+                          {waitingForApproval && section.order === currentSectionIndex && (
+                            <div className="mt-6 border-t pt-4">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-2">
+                                  <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
+                                  <span className="text-sm font-medium text-gray-700">Section generated successfully</span>
+                                </div>
+                                <div className="flex items-center space-x-3">
+                                  <button
+                                    onClick={() => editSection(section.section_id)}
+                                    className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                                  >
+                                    <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                    </svg>
+                                    Edit Section
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setWaitingForApproval(false);
+                                      continueGeneration();
+                                    }}
+                                    className="inline-flex items-center px-4 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                                  >
+                                    Continue to Next Section
+                                    <svg className="w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

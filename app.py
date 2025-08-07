@@ -203,23 +203,23 @@ def get_assistants():
         {
             "id": "aks-support",
             "name": "AKS Support Assistant",
-            "description": "Generate responses to Azure Kubernetes Service customer emails",
-            "icon": "💬",
+            "description": "Expert help for Azure Kubernetes Service issues",
+            "icon": "🚀",
             "status": "active"
         },
         {
             "id": "prd-writer",
-            "name": "PRD Writer & Reviewer",
-            "description": "Create new PRDs or review existing Product Requirements Documents",
+            "name": "PRD Writer",
+            "description": "Generate professional Product Requirement Documents",
             "icon": "📝",
             "status": "active"
         },
         {
-            "id": "code-reviewer",
-            "name": "Code Review Assistant",
-            "description": "Automated code review and suggestions",
-            "icon": "👨‍💻",
-            "status": "coming-soon"
+            "id": "prd-builder",
+            "name": "PRD Builder (Section by Section)",
+            "description": "Build PRDs section by section with review and editing",
+            "icon": "🏗️",
+            "status": "active"
         }
     ]
     return jsonify(assistants)
@@ -235,6 +235,87 @@ def serve_static_files(path):
         return send_from_directory(app.static_folder, path)
     else:
         return send_from_directory(app.static_folder, 'index.html')
+    
+@app.route('/api/prd/sections', methods=['GET'])
+def get_prd_sections():
+    """Get all PRD sections configuration"""
+    try:
+        sections = prd_agent.get_prd_sections()
+        return jsonify({"sections": sections})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/prd/generate-section', methods=['POST'])
+def generate_prd_section():
+    """Generate a single PRD section"""
+    try:
+        data = request.json
+        section_id = data.get('section_id')
+        context = data.get('context', {})
+        previous_sections = data.get('previous_sections', {})
+        
+        content = prd_agent.generate_prd_section(section_id, context, previous_sections)
+        
+        return jsonify({
+            "section_id": section_id,
+            "content": content
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/prd/regenerate-section', methods=['POST'])
+def regenerate_prd_section():
+    """Regenerate a section with feedback"""
+    try:
+        data = request.json
+        section_id = data.get('section_id')
+        context = data.get('context', {})
+        previous_sections = data.get('previous_sections', {})
+        feedback = data.get('feedback', '')
+        
+        # Add feedback to context
+        context['user_feedback'] = feedback
+        
+        content = prd_agent.generate_prd_section(section_id, context, previous_sections)
+        
+        return jsonify({
+            "section_id": section_id,
+            "content": content
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/prd/create-stream', methods=['POST'])
+def create_prd_stream():
+    """Create PRD with section-by-section streaming"""
+    # Get request data BEFORE the generator function
+    global prd_agent
+    
+    # Initialize components if not already done
+    if not prd_agent:
+        if not initialize_components():
+            return jsonify({'type': 'error', 'error': 'Failed to initialize components'}), 500
+    
+    # Get data from request OUTSIDE the generator
+    data = request.get_json()
+    prompt = data.get('prompt', '')
+    context = data.get('context', '')
+    data_sources = data.get('data_sources', [])
+    
+    if not prompt:
+        return jsonify({'type': 'error', 'error': 'Prompt is required'}), 400
+    
+    def generate():
+        try:
+            # Stream sections using the data we captured outside
+            for section_data in prd_agent.create_prd_stream(prompt, context, data_sources):
+                yield f"data: {json.dumps(section_data)}\n\n"
+                
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return Response(generate(), mimetype="text/event-stream")
+
 @app.route('/api/prd/create', methods=['POST'])
 def create_prd():
     try:
@@ -267,6 +348,32 @@ def create_prd():
     except Exception as e:
         print(f"Error creating PRD: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/prd/continue-generation', methods=['POST'])
+def continue_prd_generation():
+    """Continue PRD generation from a specific section"""
+    global prd_agent
+    
+    if not prd_agent:
+        if not initialize_components():
+            return jsonify({'type': 'error', 'error': 'Failed to initialize components'}), 500
+    
+    data = request.get_json()
+    prompt = data.get('prompt', '')
+    context = data.get('context', '')
+    data_sources = data.get('data_sources', [])
+    previous_sections = data.get('previous_sections', {})
+    start_from_index = data.get('start_from_index', 0)
+    
+    def generate():
+        try:
+            # Continue from the specified section
+            for section_data in prd_agent.continue_from_section(prompt, context, data_sources, previous_sections, start_from_index):
+                yield f"data: {json.dumps(section_data)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    
+    return Response(generate(), mimetype="text/event-stream")
 
 @app.route('/api/prd/review', methods=['POST'])
 def review_prd():

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import AgentSelector from './components/AgentSelector';
 import EmailSupportAgent from './components/EmailSupportAgent';
 import PRDAgent from './components/PRDAgent';
+import PRDBuilder from './components/PRDBuilder';
 
 interface Agent {
   id: string;
@@ -40,6 +41,9 @@ function App() {
       )}
       {selectedAgent === 'prd-writer' && (
         <PRDAgent onBack={handleBack} />
+      )}
+      {selectedAgent === 'prd-builder' && (
+        <PRDBuilder onBack={handleBack} />
       )}
     </div>
   );

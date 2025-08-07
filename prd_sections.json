@@ -1,0 +1,79 @@
+{
+  "sections": [
+    {
+      "title": "Problem Statement / Motivation",
+      "order": 1,
+      "prompt": "State the problem or challenge in a way that ties back to the target user. What is their goal? Why does this matter to them? Make the problem real & relevant. Context: {context}"
+    },
+    {
+      "title": "Customer user stories / use cases",
+      "order": 2,
+      "prompt": "Share the customer user persona, stories, corresponding requirements in a table format. Create a story that provides a high-level overview – detail out the customer, their problem or goal, and then specific outcomes the customer will achieve or how success would be measured. Avoid implementation details that may restrict solution choices. Specify the target users or system. Consider doing this as a fictitious customer quote/case study. Format as: Persona | User stories and jobs to be done As a (persona)... Previous context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Customers and Business Impact",
+      "order": 3,
+      "prompt": "Provide customer data or insights with respects to the Problem Statement. Provide the business impact and OKR alignment. Previous context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Existing Solutions or Expectations",
+      "order": 4,
+      "prompt": "List the various ways in which a user may currently tackle this problem/challenge. With what expectations will customers approach our solution (competitors or current behaviors)? Previous context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Goals/Non-Goals",
+      "order": 5,
+      "prompt": "Provide a bulleted list of goals and non-goals. This should include all the high-level customer requirements this needs to meet. Format as:\n\nGoals\n• Goal 1\n\nNon-goals\n• Non-goal 1\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Proposed Solution / Marketing Announcement",
+      "order": 6,
+      "prompt": "Describe your proposed solution via the Announcement/Press Release for it. Use this format:\n\nAnnouncing <foo feature> for Azure Kubernetes Service (AKS)\n\nWe are thrilled to introduce [Feature Name], a new feature designed to [briefly describe the purpose and benefit of the feature]. With [Feature Name], you can now [briefly describe the main functionality].\n\nAddressing Key Challenges\n[Describe the common challenges or pain points that the feature aims to address. Explain why these challenges are significant and how the feature will help overcome them.]\n\nFunctionality and Usage\n[Provide a detailed description of the feature's functionality. Explain how users can utilize the feature and what benefits it offers.]\n\nAvailability\n[Provide information about the availability of the feature. Mention any version requirements, rollout plans, or timelines.]\n\nFor more information, review the detailed documentation on how to make the most of this exciting new feature!\n\nMarketing details deck link: <insert link of uploaded deck>\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "FAQ",
+      "order": 7,
+      "prompt": "Try to imagine all the questions any internal stakeholder and/or customer would ask and answer them. (different sections). Try your best to answer them all, highlight any ones where you need help. Capture questions and feedback from comments as appropriate. Format as:\n\nQuestion 1\nAnswer 1\n\nQuestion 2\nAnswer 2\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "User Experience",
+      "order": 8,
+      "prompt": "Describe the user experience. Include API Property names, feature names, CLI parameters and any relevant fields. Include some success and failure scenarios. If you believe your product/feature needs design or user research, open a ticket.\n\nAzure CLI experience\nLorem ipsum.\naz aks create -n contoso -g contoso-aks --sku apps\n\nAPI experience\nLorem ipsum.\n\nOptional: Portal experience mockups\nLorem ipsum.\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Open Questions (optional)",
+      "order": 9,
+      "prompt": "Any possible open questions about the possible solution, requirements or experience that you want to discuss/get feedback. This section should not exist in an approved PRD. You may also use for important questions that will need to be tackled in the design phase. Format as:\n\nQuestion/Discussion 1\nDescription/Potential answer.\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Expected Impact: Business, Customer, and Technology Outcomes, Experiments + Measures",
+      "order": 10,
+      "prompt": "Identify the business, customer, and technology outcomes you expect to achieve as a result of delivering on this scenario – and then define the measures you will use to gauge progress. Ongoing iteration on the outcomes, and how to measure them, will be critical to success. Consider leveraging experiments to enable data-driven decisions. Consider telemetry that you will use to Land this work. Format as table:\n\nNo. | Outcome | Measure | Target | Pri\n1   |         |         |        | 0\n2   |         |         |        |\n3   |         |         |        |\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Functional Requirements",
+      "order": 11,
+      "prompt": "What feature functionality is required to deliver the outcomes listed above? Specific / concrete user requirements / user stories. (in contrast to higher-level in goals). Include:\n3. [Observability] Add recommended alert, RHC alert or Azure advisor to inform customer of issues, misconfigurations or service degradation - RHC, Advisor, AppLens Cheat Sheet - Overview\n4. [Observability mandatory] Diagnose and Solve Applens Detector for customer troubleshooting capability– Applens detectors intake process - Overview\n5. [Security&Network] Add support for Private Link if your feature requires outbound access to any Azure or Non-Azure endpoint. Private Link is one of the Enterprise Promise must be delivered before public preview/GA. VNet Integration for Azure Services - Home\n\nFormat as table:\nNo | Requirement | Pri\n1  |             |\n2  |             |\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Non-Functional Requirements",
+      "order": 12,
+      "prompt": "What non-functional characteristics must the feature meet to support the outcomes listed above? Focus on measurable system qualities such as performance, scalability, reliability, availability, security, and compliance. These are distinct from user-facing functionality and should not overlap with user stories or goals. Format as table:\n\nNo | Requirement | Pri\n1  |             |\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Test Requirements",
+      "order": 13,
+      "prompt": "What testing functionality is required to deliver the outcomes and requirements listed above? What testing is needed to prevent unforeseen edge cases and protect against changes? What composed / complex scenarios should be tested together? Include:\n1. [Scale and Perf testing] AKS Scalability and Performance LRB Requirements - 12-03-24 - Overview\n\nFormat as table:\nNo | Requirement | Pri\n1  | [Scale and Perf testing] AKS Scalability and Performance LRB Requirements - 12-03-24 - Overview | 0\n2  |             |\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Dependencies",
+      "order": 14,
+      "prompt": "At a high level, what dependencies from other teams are required? Format as table:\n\nNo | Requirement or Deliverable | Giver Team / Contact\n1  |                            |\n2  |                            |\n\nPrevious context: {previous_sections}. Current context: {context}"
+    },
+    {
+      "title": "Compete",
+      "order": 15,
+      "prompt": "What are the related current solutions and behavior we see from our competitors?\n\n5.1 GKE\n[Analysis]\n\n5.2 EKS\n[Analysis]\n\n5.3 Others\n[Analysis]\n\nPrevious context: {previous_sections}. Current context: {context}"
+    }
+  ]
+}

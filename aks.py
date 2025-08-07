@@ -12,6 +12,15 @@ import base64
 import requests
 import hashlib
 from ai_grader import AIResponseGrader, AKSResponseTester
+from azure.ai.agents.models import BingGroundingTool
+
+# Configuration
+VECTOR_STORE_FILE = "vector_store_id.json"
+ASSISTANT_ID_FILE = "assistant_id.json"
+SUPPORTED_FORMATS = {".md", ".txt", ".json", ".yaml", ".yml"}
+WIKI_URL_MAPPING_FILE = "wiki_url_mapping.json"
+# Remove line 22 and replace lines 15-22 with:
+from azure.ai.agents.models import BingGroundingTool
 
 # Configuration
 VECTOR_STORE_FILE = "vector_store_id.json"
@@ -19,23 +28,66 @@ ASSISTANT_ID_FILE = "assistant_id.json"
 SUPPORTED_FORMATS = {".md", ".txt", ".json", ".yaml", ".yml"}
 WIKI_URL_MAPPING_FILE = "wiki_url_mapping.json"
 
+# Initialize Bing grounding tool only if connection name is available
+# Initialize Bing grounding tool only if connection name is available
+def get_bing_grounding_tool():
+    print("🐛 DEBUG: Checking BING_CONNECTION_NAME...")
+    # connection_name = os.getenv("BING_CONNECTION_NAME")
+    connection_name = os.getenv("AZURE_BING_CONNECTION_ID")
+    print(f"🐛 DEBUG: BING_CONNECTION_NAME = {connection_name}")
+    
+    if connection_name:
+        print("🐛 DEBUG: Attempting to initialize BingGroundingTool...")
+        try:
+            tool = BingGroundingTool(connection_id=connection_name)
+            print("🐛 DEBUG: ✅ BingGroundingTool initialized successfully")
+            return tool
+        except Exception as e:
+            print(f"⚠️  Could not initialize Bing grounding tool: {e}")
+            print(f"🐛 DEBUG: Exception details: {type(e).__name__}: {str(e)}")
+            return None
+    else:
+        print("🐛 DEBUG: No BING_CONNECTION_NAME found, skipping Bing tool")
+        return None
+
 class AKSWikiAssistant:
     def __init__(self):
+        print("🐛 DEBUG: Starting AKSWikiAssistant initialization...")
         print(f"API Key set: {'Yes' if os.getenv('AZURE_OPENAI_API_KEY') else 'No'}")
         print(f"Endpoint: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
         """Initialize the AKS Wiki Assistant with Azure OpenAI client"""
+        
+        print("🐛 DEBUG: Creating Azure OpenAI client...")
         self.client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version="2024-12-01-preview",
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )
+        print("🐛 DEBUG: ✅ Azure OpenAI client created")
+        
         self.deployment_name = os.environ.get("AZURE_OPENAI_MODEL_EMAIL", "gpt-4.1")
         self.vector_store_id = None
         self.assistant_id = None
         self.thread_id = None
+        
+        print("🐛 DEBUG: Loading wiki URL mapping...")
         self.wiki_url_mapping = self.load_wiki_url_mapping()
+        print("🐛 DEBUG: ✅ Wiki URL mapping loaded")
+        
+        print("🐛 DEBUG: Initializing AI grader...")
         self.ai_grader = AIResponseGrader()
+        print("🐛 DEBUG: ✅ AI grader initialized")
+        
+        print("🐛 DEBUG: Initializing response tester...")
         self.response_tester = AKSResponseTester(self, self.ai_grader)
+        print("🐛 DEBUG: ✅ Response tester initialized")
+        
+        print("🐛 DEBUG: Initializing Bing tool...")
+        self.bing_tool = get_bing_grounding_tool()
+        print(f"🐛 DEBUG: ✅ Bing tool result: {self.bing_tool is not None}")
+        
+        print("🐛 DEBUG: ✅ AKSWikiAssistant initialization complete")
+
 
     def test_against_human_response(self, 
                                    question: str, 
@@ -519,7 +571,10 @@ class AKSWikiAssistant:
 
     def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
         """Ask a question to the assistant"""
+        print(f"🐛 DEBUG: ask_question called with: question='{question}', return_response={return_response}, stream={stream}")
+        
         if not self.thread_id:
+            print("🐛 DEBUG: Creating new thread...")
             thread = self.client.beta.threads.create(
                 tool_resources={
                     "file_search": {
@@ -528,21 +583,69 @@ class AKSWikiAssistant:
                 }
             )
             self.thread_id = thread.id
+            print(f"🐛 DEBUG: ✅ Thread created: {self.thread_id}")
+        else:
+            print(f"🐛 DEBUG: Using existing thread: {self.thread_id}")
         
         # Add message to thread
+        print("🐛 DEBUG: Adding message to thread...")
         self.client.beta.threads.messages.create(
             thread_id=self.thread_id,
             role="user",
             content=question,  
         )
+        print("🐛 DEBUG: ✅ Message added to thread")
         
+        # Prepare tools list - use bing.definitions like the working wiki_assistant.py
+        # Prepare tools list - extract the JSON-serializable format
+        tools = [{"type": "file_search"}]
+        # if self.bing_tool:
+        #     try:
+        #         # The BingGroundingTool.definitions returns a list with the tool definition
+        #         # Extract the actual dict from the definitions
+        #         if hasattr(self.bing_tool, 'definitions') and self.bing_tool.definitions:
+        #             for tool_def in self.bing_tool.definitions:
+        #                 # Convert to dict if it's not already
+        #                 if hasattr(tool_def, '__dict__'):
+        #                     # It's an object, need to convert to dict
+        #                     tool_dict = {
+        #                         "type": "bing_grounding",
+        #                         "bing_grounding": {
+        #                             "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
+        #                         }
+        #                     }
+        #                     tools.append(tool_dict)
+        #                 else:
+        #                     # It's already a dict
+        #                     tools.append(tool_def)
+        #             print(f"🐛 DEBUG: Added Bing grounding tool")
+        #         else:
+        #             # Fallback to manual configuration
+        #             tools.append({
+        #                 "type": "bing_grounding",
+        #                 "bing_grounding": {
+        #                     "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
+        #                 }
+        #             })
+        #             print("🐛 DEBUG: Added Bing grounding tool (fallback)")
+        #     except Exception as e:
+        #         print(f"🐛 DEBUG: Error adding Bing tools: {e}")
+        #         print("🐛 DEBUG: Continuing without Bing grounding")
+        # else:
+        #     print("🐛 DEBUG: No Bing tool available")
+        print(f"🐛 DEBUG: Final tools array: {tools}")
+
         # Run the assistant with explicit file search
         print("🔄 Processing your question...")
+        print("🐛 DEBUG: About to create assistant run...")
+        
         if stream:
-            run = self.client.beta.threads.runs.create(
-                thread_id=self.thread_id,
-                assistant_id=self.assistant_id,
-                instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+            print("🐛 DEBUG: Creating streaming run...")
+            try:
+                run = self.client.beta.threads.runs.create(
+                    thread_id=self.thread_id,
+                    assistant_id=self.assistant_id,
+                    instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
 
         SEARCH PRIORITY:
         1. Search the uploaded documentation files for official AKS guidance
@@ -558,40 +661,54 @@ class AKSWikiAssistant:
         FORMAT:
         - Clear answer with step-by-step guidance
         - Include relevant examples and best practices from the documentation""",
-                tools=[{"type": "file_search"}],
-                stream=True
-            )
+                    tools=tools,
+                    stream=True
+                )
+                print("🐛 DEBUG: ✅ Streaming run created successfully")
+            except Exception as e:
+                print(f"🐛 DEBUG: ❌ Error creating streaming run: {type(e).__name__}: {str(e)}")
+                raise
             
             response_content = ""
+            print("🐛 DEBUG: Starting to process stream events...")
             
-            for event in run:
-                if event.event == 'thread.message.delta':
-                    for content in event.data.delta.content:
-                        if hasattr(content, 'text') and hasattr(content.text, 'value'):
-                            chunk = content.text.value
-                            response_content += chunk
-                            yield chunk
-                elif event.event == 'thread.run.completed':
-                    # Process final content with citations
-                    messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
-                    for message in messages:
-                        if message.role == "assistant":
-                            for content in message.content:
-                                if hasattr(content, 'text'):
-                                    text_content = content.text.value
-                                    annotations = getattr(content.text, 'annotations', [])
-                                    final_content = self.process_citations(text_content, annotations)
-                                    
-                                    # Send any remaining content
-                                    if len(final_content) > len(response_content):
-                                        remaining = final_content[len(response_content):]
-                                        yield remaining
-                                    return
+            try:
+                for event in run:
+                    print(f"🐛 DEBUG: Stream event: {event.event}")
+                    if event.event == 'thread.message.delta':
+                        for content in event.data.delta.content:
+                            if hasattr(content, 'text') and hasattr(content.text, 'value'):
+                                chunk = content.text.value
+                                response_content += chunk
+                                yield chunk
+                    elif event.event == 'thread.run.completed':
+                        print("🐛 DEBUG: Run completed, processing citations...")
+                        # Process final content with citations
+                        messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
+                        for message in messages:
+                            if message.role == "assistant":
+                                for content in message.content:
+                                    if hasattr(content, 'text'):
+                                        text_content = content.text.value
+                                        annotations = getattr(content.text, 'annotations', [])
+                                        final_content = self.process_citations(text_content, annotations)
+                                        
+                                        # Send any remaining content
+                                        if len(final_content) > len(response_content):
+                                            remaining = final_content[len(response_content):]
+                                            yield remaining
+                                        print("🐛 DEBUG: ✅ Streaming response completed")
+                                        return
+            except Exception as e:
+                print(f"🐛 DEBUG: ❌ Error processing stream: {type(e).__name__}: {str(e)}")
+                raise
         else:
-            run = self.client.beta.threads.runs.create_and_poll(
-                thread_id=self.thread_id,
-                assistant_id=self.assistant_id,
-                instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+            print("🐛 DEBUG: Creating non-streaming run...")
+            try:
+                run = self.client.beta.threads.runs.create_and_poll(
+                    thread_id=self.thread_id,
+                    assistant_id=self.assistant_id,
+                    instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
 
         SEARCH PRIORITY:
         1. Search the uploaded documentation files for official AKS guidance
@@ -610,10 +727,15 @@ class AKSWikiAssistant:
         - Use basic HTML formatting: <strong>bold</strong>, <em>italic</em>, <br> for line breaks
         - Include relevant examples and best practices from the documentation
         - Do not use markdown - use HTML formatting only""",
-                tools=[{"type": "file_search"}],
-            )
+                    tools=tools,
+                )
+                print(f"🐛 DEBUG: ✅ Non-streaming run created with status: {run.status}")
+            except Exception as e:
+                print(f"🐛 DEBUG: ❌ Error creating non-streaming run: {type(e).__name__}: {str(e)}")
+                raise
         
         if run.status == 'completed':
+            print("🐛 DEBUG: Run completed successfully, processing messages...")
             # Get messages
             messages = self.client.beta.threads.messages.list(
                 thread_id=self.thread_id
@@ -629,12 +751,15 @@ class AKSWikiAssistant:
                             final_content = self.process_citations(text_content, annotations)
                             
                             if return_response:
+                                print("🐛 DEBUG: ✅ Returning response")
                                 return final_content
                             else:
                                 print(f"\n🤖 Assistant:\n{final_content}\n")
+                                print("🐛 DEBUG: ✅ Response printed")
                                 return final_content
         else:
             print(f"❌ Run failed with status: {run.status}")
+            print(f"🐛 DEBUG: ❌ Run failed with status: {run.status}")
 
     def interactive_mode(self) -> None:
         """Interactive question-answer mode"""
