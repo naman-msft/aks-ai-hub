@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file
 import os
 import json
 from typing import Dict, List, Optional
@@ -10,6 +12,10 @@ from aks import AKSWikiAssistant
 from dotenv import load_dotenv
 import tempfile
 import base64
+import requests
+from azure.ai.projects import AIProjectClient
+from azure.ai.agents.models import MessageRole, BingGroundingTool
+from azure.identity import DefaultAzureCredential
 # Load environment variables from .env file
 load_dotenv()
 class PRDAgent:
@@ -19,10 +25,217 @@ class PRDAgent:
             api_version="2024-02-01",
             azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT")
         )
-        self.wiki_assistant = AKSWikiAssistant()
+        
+        # Initialize wiki assistant
+        try:
+            self.wiki_assistant = AKSWikiAssistant()
+            # Load existing vector store and assistant if available
+            if os.path.exists("vector_store_id.json"):
+                with open("vector_store_id.json", 'r') as f:
+                    self.wiki_assistant.vector_store_id = json.load(f)["vector_store_id"]
+            if os.path.exists("assistant_id.json"):
+                with open("assistant_id.json", 'r') as f:
+                    self.wiki_assistant.assistant_id = json.load(f)["assistant_id"]
+        except Exception as e:
+            print(f"Warning: Could not initialize wiki assistant: {e}")
+            self.wiki_assistant = None
+        
         self.prd_template = self._load_prd_template()
-        self.deployment_name = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-4o")
+        self.deployment_name = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-5")
+        
+        # Initialize Azure AI Projects for Bing if configured
+        self.project_client = None
+        self.bing_connection_id = os.getenv("AZURE_BING_CONNECTION_ID")
+        if os.getenv("PROJECT_ENDPOINT") and self.bing_connection_id:
+            try:
+                self.project_client = AIProjectClient(
+                    endpoint=os.environ.get("PROJECT_ENDPOINT"),
+                    credential=DefaultAzureCredential(),
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize AI Projects client: {e}")
     
+    def search_wiki(self, query: str) -> str:
+        """Search internal wiki using the AKSWikiAssistant - using the working pattern from aks.py"""
+        if not self.wiki_assistant:
+            return ""
+        
+        try:
+            # Use the same streaming approach that works in aks.py
+            result_generator = self.wiki_assistant.ask_question(
+                question=f"Find information about: {query}. Be concise and focus on key points.",
+                return_response=False,  # Use False to get generator
+                stream=True  # Use True for streaming
+            )
+            
+            # Collect the streamed response
+            full_response = ""
+            if result_generator:
+                for chunk in result_generator:
+                    if chunk:
+                        full_response += str(chunk)
+            
+            if full_response:
+                # Extract any URLs from the response if they exist
+                # Look for patterns like [View this page online](URL) or <a href="URL">
+                import re
+                
+                # Try to extract URLs from HTML links
+                url_pattern = r'href="([^"]+)"'
+                urls = re.findall(url_pattern, full_response)
+                
+                # Clean up the response - remove HTML for PRD context
+                clean_response = re.sub(r'<[^>]+>', '', full_response)
+                clean_response = clean_response[:1000] + "..." if len(clean_response) > 1000 else clean_response
+                
+                return clean_response
+            return ""
+            
+        except Exception as e:
+            print(f"Wiki search error: {e}")
+            return ""
+    
+    def search_with_bing(self, query: str) -> tuple[str, list]:
+        """Search using Bing grounding via Azure AI Projects - create fresh client each time"""
+        print(f"DEBUG: Bing search called for: {query}")
+        
+        if not self.bing_connection_id:
+            print(f"DEBUG: Missing Bing connection")
+            return "", []
+        
+        try:
+            # Create a fresh project client for each search
+            from azure.ai.projects import AIProjectClient
+            from azure.identity import DefaultAzureCredential
+            
+            project_client = AIProjectClient(
+                endpoint=os.environ.get("PROJECT_ENDPOINT"),
+                credential=DefaultAzureCredential(),
+            )
+            
+            instructions = """You are an expert Azure Kubernetes Service (AKS) support assistant. 
+
+    When searching for information:
+    1. Search the web for current, relevant information about the specific problem
+    2. Focus on official Microsoft documentation and Azure GitHub repositories
+    3. Include relevant links and citations from your search results"""
+
+            with project_client:
+                agents_client = project_client.agents
+                print("DEBUG: Got agents client")
+                
+                # Initialize Bing grounding tool
+                bing = BingGroundingTool(connection_id=self.bing_connection_id)
+                print("DEBUG: Created BingGroundingTool")
+                
+                # Create agent with Bing grounding
+                agent = agents_client.create_agent(
+                    model="gpt-4.1",
+                    name="prd-search-assistant",
+                    instructions=instructions,
+                    tools=bing.definitions,
+                )
+                print(f"DEBUG: Created agent: {agent.id}")
+                
+                # Create thread
+                thread = agents_client.threads.create()
+                print(f"DEBUG: Created thread: {thread.id}")
+                
+                # Create search query
+                search_query = f"""Search for information about: {query}
+
+    **SEARCH PRIORITY INSTRUCTIONS:**
+    1. FIRST search these official sources (prioritize these heavily):
+    - site:github.com/Azure/AKS for official GitHub repository
+    - site:learn.microsoft.com/en-us/azure/aks/ for official Microsoft Learn documentation
+
+    2. If needed, search other relevant sources
+
+    Use search operators like:
+    - site:learn.microsoft.com/en-us/azure/aks/ {query}
+    - site:github.com/Azure/AKS {query}"""
+                
+                # Create message with proper format
+                message = agents_client.messages.create(
+                    thread_id=thread.id,
+                    role=MessageRole.USER,
+                    content=[{"type": "text", "text": search_query}],
+                )
+                print(f"DEBUG: Created message")
+                
+                # Run and process
+                run = agents_client.runs.create_and_process(
+                    thread_id=thread.id, 
+                    agent_id=agent.id
+                )
+                print(f"DEBUG: Run finished with status: {run.status}")
+                
+                # Check if run was successful
+                if run.status == "failed":
+                    print(f"DEBUG: Run failed: {run.last_error}")
+                    agents_client.delete_agent(agent.id)
+                    return "", []
+                
+                # Check run steps to see if Bing was used
+                run_steps = agents_client.run_steps.list(thread_id=thread.id, run_id=run.id)
+                
+                step_count = 0
+                used_bing = False
+                for step in run_steps:
+                    step_count += 1
+                    print(f"Step {step.get('id')} status: {step.get('status')}")
+                    step_details = step.get("step_details", {})
+                    tool_calls = step_details.get("tool_calls", [])
+                    
+                    if tool_calls:
+                        print("  Tool calls:")
+                        for call in tool_calls:
+                            print(f"    Tool Call ID: {call.get('id')}")
+                            print(f"    Type: {call.get('type')}")
+                            
+                            if call.get('type') == 'bing_grounding':
+                                used_bing = True
+                                bing_details = call.get("bing_grounding", {})
+                                if bing_details:
+                                    print(f"    Bing Grounding ID: {bing_details.get('requesturl')}")
+                    print()
+                
+                print(f"Found {step_count} run steps total")
+                
+                # Get the agent's response
+                response_message = agents_client.messages.get_last_message_by_role(
+                    thread_id=thread.id, 
+                    role=MessageRole.AGENT
+                )
+                
+                response_text = ""
+                citations = []
+                
+                if response_message:
+                    # Extract text
+                    for text_message in response_message.text_messages:
+                        response_text += text_message.text.value
+                    
+                    # Extract URL citations
+                    for annotation in response_message.url_citation_annotations:
+                        citations.append({
+                            'title': annotation.url_citation.title,
+                            'url': annotation.url_citation.url
+                        })
+                        print(f"Found citation: {annotation.url_citation.title}")
+                
+                # Clean up
+                agents_client.delete_agent(agent.id)
+                print("Deleted agent")
+                
+                return response_text, citations
+                
+        except Exception as e:
+            print(f"Bing search error: {e}")
+            import traceback
+            traceback.print_exc()
+            return "", []
+
     def _load_prd_template(self) -> Dict:
         """Load PRD template structure"""
         return {
@@ -108,7 +321,7 @@ class PRDAgent:
                 user_prompt += f"\nContext: {context}"
             
             response = self.client.chat.completions.create(
-                model=os.environ.get("AZURE_OPENAI_MODEL_PRD", "gpt-4.1"),
+                model=os.environ.get("AZURE_OPENAI_MODEL_PRD", "gpt-5"),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -190,10 +403,20 @@ class PRDAgent:
             
             # Generate each section
             for section in sorted(sections, key=lambda x: x['order']):
+                # Search for relevant information for this section
+                search_query = f"{section['title']} {prompt}"
+                
+                # Search wiki
+                wiki_content = self.search_wiki(search_query)
+
+                    
+                # Search web with Bing
+                web_content, citations = self.search_with_bing(search_query)
+                
                 # Build the prompt for this section
                 section_prompt = section['prompt']
                 
-                # Add ALL previous sections as context (incremental buildup)
+                # Add previous sections context
                 if previous_sections:
                     prev_context = "\n\n=== PREVIOUS SECTIONS ===\n"
                     for prev_title, prev_content in previous_sections.items():
@@ -202,34 +425,61 @@ class PRDAgent:
                 else:
                     section_prompt = section_prompt.replace("{previous_sections}", "")
                 
-                # Add current context
-                context_str = f"Product: {prompt}\nContext: {context}\n{additional_context}"
-                section_prompt = section_prompt.replace("{context}", context_str)
+                citations_text = ""
+                if citations:
+                    citations_text = "\n".join([f"- [{c['title']}]({c['url']})" for c in citations[:5]])
+            
+                # Enhanced context with web and wiki search
+                enhanced_context = f"""Product: {prompt}
+                Context: {context}
+                {additional_context}
+
+                === Wiki Knowledge ===
+                {wiki_content if wiki_content else "No relevant wiki entries found."}
+
+                === Web Research ===
+                {web_content[:1000] if web_content else "No relevant web results found."}
+
+                === Available Citations ===
+                {citations_text if citations_text else "No citations available."}
+
+                IMPORTANT: When citing sources in your response:
+                - For wiki content, use: [[Wiki: AKS Documentation]](https://dev.azure.com/msazure/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki)
+                - For web sources with known URLs, use the markdown link format: [Source: title](url)
+                - Include the actual URL from the citations list above when available
+                - Never use 'internal' or 'localhost' as URLs - use real documentation links"""
+                section_prompt = section_prompt.replace("{context}", enhanced_context)
                 
-                # Generate the section
+                # Generate the section with citations
                 response = self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
                         {"role": "system", "content": """You are an expert Product Manager writing a PRD for Azure Kubernetes Service (AKS) features. 
                         Follow the template guidance exactly. 
+                        
+                        CITATION RULES:
+                        - When citing wiki content, use: [[Wiki: AKS Documentation]](https://dev.azure.com/msazure/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki)
+                        - When citing web sources, use markdown links with actual URLs: [Source: title](url)
+                        - Always use the actual URLs from the citations provided
+                        - Never use 'internal' or 'localhost' as URLs
+                        - Make citations clickable by using proper markdown link syntax
+                        
                         DO NOT include the section title in your response. 
-                        DO NOT add any preamble like 'Here is', 'Below is', 'Absolutely', etc. 
                         Start directly with the content.
                         Format tables using proper markdown table syntax with | separators.
                         Format bullet points using - or * at the start of lines.
                         Use proper markdown formatting for headers (###), bold (**text**), and lists."""},
-                        {"role": "user", "content": section_prompt + "\n\nIMPORTANT: Provide ONLY the content without the section title or any introductory phrases. Use proper markdown formatting."}
+                        {"role": "user", "content": section_prompt + "\n\nIMPORTANT: Provide ONLY the content without the section title. Make all citations clickable using markdown link syntax [text](url)."}
                     ],
                 )
                 
                 section_content = response.choices[0].message.content
-                # Store with the actual title for context
                 previous_sections[section['title']] = section_content
                 
-                # Yield this section (use title as section_id for simplicity)
+                # Yield this section
                 yield {
                     "type": "section",
-                    "section_id": section['title'],  # Use title as ID
+                    "section_id": section['title'],
                     "title": section['title'],
                     "content": section_content,
                     "order": section['order']
@@ -246,7 +496,6 @@ class PRDAgent:
                 "type": "error",
                 "error": str(e)
             }
-
     def continue_from_section(self, prompt: str, context: str, data_sources: List[Dict], previous_sections: Dict, start_index: int):
         """Continue PRD generation from a specific section"""
         try:
@@ -263,6 +512,15 @@ class PRDAgent:
             
             # Generate remaining sections starting from start_index
             for section in sorted(sections, key=lambda x: x['order'])[start_index:]:
+                # ADD WIKI AND BING SEARCH HERE - SAME AS create_prd_stream
+                search_query = f"{section['title']} {prompt}"
+                
+                # Search wiki
+                wiki_content = self.search_wiki(search_query)
+
+                # Search web with Bing
+                web_content, citations = self.search_with_bing(search_query)
+                
                 section_prompt = section['prompt']
                 
                 # Add ALL previous sections as context
@@ -274,21 +532,51 @@ class PRDAgent:
                 else:
                     section_prompt = section_prompt.replace("{previous_sections}", "")
                 
-                context_str = f"Product: {prompt}\nContext: {context}\n{additional_context}"
-                section_prompt = section_prompt.replace("{context}", context_str)
+                # Build citations text
+                citations_text = ""
+                if citations:
+                    citations_text = "\n".join([f"- [{c['title']}]({c['url']})" for c in citations[:5]])
+                
+                # Enhanced context with wiki and web search
+                enhanced_context = f"""Product: {prompt}
+                Context: {context}
+                {additional_context}
+
+                === Wiki Knowledge ===
+                {wiki_content if wiki_content else "No relevant wiki entries found."}
+
+                === Web Research ===
+                {web_content[:1000] if web_content else "No relevant web results found."}
+
+                === Available Citations ===
+                {citations_text if citations_text else "No citations available."}
+
+                IMPORTANT: When citing sources in your response:
+                - For wiki content, use: [[Wiki: AKS Documentation]](https://dev.azure.com/msazure/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki)
+                - For web sources with known URLs, use the markdown link format: [Source: title](url) from the citations above
+                - Include the actual URL from the citations list when available
+                - Never use 'internal' or 'localhost' as URLs - use real documentation links"""
+                section_prompt = section_prompt.replace("{context}", enhanced_context)
                 
                 response = self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
                         {"role": "system", "content": """You are an expert Product Manager writing a PRD for Azure Kubernetes Service (AKS) features. 
                         Follow the template guidance exactly. 
+                        
+                        CITATION RULES:
+                        - When citing wiki content, use: [[Wiki: AKS Documentation]](https://dev.azure.com/msazure/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki)
+                        - When citing web sources, use markdown links with actual URLs: [Source: title](url)
+                        - Always use the actual URLs from the citations provided
+                        - Never use 'internal' or 'localhost' as URLs
+                        - Make citations clickable by using proper markdown link syntax
+                        
                         DO NOT include the section title in your response. 
-                        DO NOT add any preamble like 'Here is', 'Below is', 'Absolutely', etc. 
                         Start directly with the content.
                         Format tables using proper markdown table syntax with | separators.
                         Format bullet points using - or * at the start of lines.
                         Use proper markdown formatting for headers (###), bold (**text**), and lists."""},
-                        {"role": "user", "content": section_prompt + "\n\nIMPORTANT: Provide ONLY the content without the section title or any introductory phrases. Use proper markdown formatting."}
+                        {"role": "user", "content": section_prompt + "\n\nIMPORTANT: Provide ONLY the content without the section title. Make all citations clickable using markdown link syntax [text](url)."}
                     ],
                 )
                 
@@ -312,7 +600,8 @@ class PRDAgent:
             yield {
                 "type": "error",
                 "error": str(e)
-            }                         
+            }
+            
     def review_prd(self, prd_text: str) -> Dict:
         """Review an existing PRD and provide feedback"""
         try:
@@ -331,7 +620,7 @@ class PRDAgent:
             """
             
             response = self.client.chat.completions.create(
-                model=os.environ.get("AZURE_OPENAI_MODEL_PRD", "gpt-4.1"),
+                model=os.environ.get("AZURE_OPENAI_MODEL_PRD", "gpt-5"),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Review this PRD:\n\n{prd_text}"}

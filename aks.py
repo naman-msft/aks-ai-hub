@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from html import parser
 import os
 import sys

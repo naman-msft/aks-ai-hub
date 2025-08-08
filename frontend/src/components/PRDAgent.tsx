@@ -1000,21 +1000,6 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                       <div key={section.section_id} className="bg-gray-50 rounded-lg p-6">
                         <div className="flex items-center justify-between mb-3">
                           <h5 className="text-lg font-semibold">{section.title}</h5>
-                          <div className="flex space-x-2">
-                            <button
-                              onClick={() => fixSectionFormatting(section.section_id)}
-                              className="text-sm px-2 py-1 text-blue-600 hover:text-blue-800 border border-blue-200 rounded hover:bg-blue-50"
-                              title="Fix formatting issues"
-                            >
-                              Fix Format
-                            </button>
-                            <button
-                              onClick={() => editSection(section.section_id)}
-                              className="text-sm px-2 py-1 text-gray-600 hover:text-gray-800 border border-gray-200 rounded hover:bg-gray-50"
-                            >
-                              Edit
-                            </button>
-                          </div>
                         </div>
                         
                         {section.status === 'editing' ? (
@@ -1058,6 +1043,27 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                                       </table>
                                     </div>
                                   ),
+                                  a: ({ href, children }) => {
+                                    // Fix any placeholder URLs
+                                    if (!href || href === 'internal' || href?.includes('localhost')) {
+                                        // Default to AKS docs for wiki citations
+                                        if (children?.toString().includes('Wiki')) {
+                                            href = 'https://dev.azure.com/msazure/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki';
+                                        } else {
+                                            href = 'https://learn.microsoft.com/en-us/azure/aks/';
+                                        }
+                                    }
+                                    return (
+                                        <a 
+                                            href={href} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer"
+                                            className="text-blue-600 hover:text-blue-800 underline"
+                                        >
+                                            {children}
+                                        </a>
+                                    );
+                                },
                                   thead: ({ children }) => (
                                     <thead className="bg-gray-100">{children}</thead>
                                   ),
