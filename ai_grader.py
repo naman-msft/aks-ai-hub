@@ -12,10 +12,10 @@ class AIResponseGrader:
         """Initialize the AI Response Grader with Azure OpenAI client"""
         self.client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version="2024-12-01-preview",
+            api_version="2025-04-01-preview",
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )
-        self.deployment_name = os.environ.get("AZURE_OPENAI_MODEL_GRADER", "gpt-4.1")
+        self.deployment_name = os.environ.get("AZURE_OPENAI_MODEL_GRADER")
         self.evaluation_history = []
         
     def grade_responses(self, 

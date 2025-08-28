@@ -19,41 +19,7 @@ from azure.identity import DefaultAzureCredential
 # Load environment variables from .env file
 load_dotenv()
 class PRDAgent:
-    def __init__(self):
-        self.client = AzureOpenAI(
-            api_key=os.environ.get("AZURE_OPENAI_KEY"),
-            api_version="2024-02-01",
-            azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT")
-        )
-        
-        # Initialize wiki assistant
-        try:
-            self.wiki_assistant = AKSWikiAssistant()
-            # Load existing vector store and assistant if available
-            if os.path.exists("vector_store_id.json"):
-                with open("vector_store_id.json", 'r') as f:
-                    self.wiki_assistant.vector_store_id = json.load(f)["vector_store_id"]
-            if os.path.exists("assistant_id.json"):
-                with open("assistant_id.json", 'r') as f:
-                    self.wiki_assistant.assistant_id = json.load(f)["assistant_id"]
-        except Exception as e:
-            print(f"Warning: Could not initialize wiki assistant: {e}")
-            self.wiki_assistant = None
-        
-        self.prd_template = self._load_prd_template()
-        self.deployment_name = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-5")
-        
-        # Initialize Azure AI Projects for Bing if configured
-        self.project_client = None
-        self.bing_connection_id = os.getenv("AZURE_BING_CONNECTION_ID")
-        if os.getenv("PROJECT_ENDPOINT") and self.bing_connection_id:
-            try:
-                self.project_client = AIProjectClient(
-                    endpoint=os.environ.get("PROJECT_ENDPOINT"),
-                    credential=DefaultAzureCredential(),
-                )
-            except Exception as e:
-                print(f"Warning: Could not initialize AI Projects client: {e}")
+
     
     def search_wiki(self, query: str) -> str:
         """Search internal wiki using the AKSWikiAssistant - using the working pattern from aks.py"""
@@ -130,7 +96,7 @@ class PRDAgent:
                 
                 # Create agent with Bing grounding
                 agent = agents_client.create_agent(
-                    model="gpt-4.1",
+                    model=os.environ.get("AZURE_OPENAI_MODEL_PRD"),
                     name="prd-search-assistant",
                     instructions=instructions,
                     tools=bing.definitions,
@@ -321,7 +287,7 @@ class PRDAgent:
                 user_prompt += f"\nContext: {context}"
             
             response = self.client.chat.completions.create(
-                model=os.environ.get("AZURE_OPENAI_MODEL_PRD", "gpt-5"),
+                model=os.environ.get("AZURE_OPENAI_MODEL_PRD"),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -620,7 +586,7 @@ class PRDAgent:
             """
             
             response = self.client.chat.completions.create(
-                model=os.environ.get("AZURE_OPENAI_MODEL_PRD", "gpt-5"),
+                model=os.environ.get("AZURE_OPENAI_MODEL_PRD"),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Review this PRD:\n\n{prd_text}"}

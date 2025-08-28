@@ -21,7 +21,7 @@ A modern web application platform for multiple AI-powered assistants. Currently 
 
 - **Frontend**: React with TypeScript
 - **Backend**: Flask Python API
-- **AI**: OpenAI GPT-4 with custom assistants and vector stores
+- **AI**: OpenAI GPT-5 with custom assistants and vector stores
 - **Deployment**: Azure App Service
 
 ## Architecture
