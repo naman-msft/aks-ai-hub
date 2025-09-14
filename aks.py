@@ -15,22 +15,16 @@ import requests
 import hashlib
 from ai_grader import AIResponseGrader, AKSResponseTester
 from azure.ai.agents.models import BingGroundingTool
+from openai import OpenAIError  # if not already imported
 
+TARGET_ASSISTANT_MODEL = os.getenv("AZURE_OPENAI_MODEL_EMAIL", "gpt-5")
+STRICT_MODEL = os.getenv("REQUIRE_ASSISTANT_MODEL_STRICT", "false").lower() == "true"
 # Configuration
 VECTOR_STORE_FILE = "vector_store_id.json"
 ASSISTANT_ID_FILE = "assistant_id.json"
 SUPPORTED_FORMATS = {".md", ".txt", ".json", ".yaml", ".yml"}
 WIKI_URL_MAPPING_FILE = "wiki_url_mapping.json"
-# Remove line 22 and replace lines 15-22 with:
-from azure.ai.agents.models import BingGroundingTool
 
-# Configuration
-VECTOR_STORE_FILE = "vector_store_id.json"
-ASSISTANT_ID_FILE = "assistant_id.json"
-SUPPORTED_FORMATS = {".md", ".txt", ".json", ".yaml", ".yml"}
-WIKI_URL_MAPPING_FILE = "wiki_url_mapping.json"
-
-# Initialize Bing grounding tool only if connection name is available
 # Initialize Bing grounding tool only if connection name is available
 def get_bing_grounding_tool():
     print("🐛 DEBUG: Checking BING_CONNECTION_NAME...")
@@ -71,6 +65,25 @@ class AKSWikiAssistant:
         self.vector_store_id = None
         self.assistant_id = None
         self.thread_id = None
+
+        # Preload existing vector store id if present
+        if os.path.exists(VECTOR_STORE_FILE):
+            try:
+                with open(VECTOR_STORE_FILE, "r") as f:
+                    data = json.load(f)
+                    self.vector_store_id = data.get("vector_store_id")
+                    if self.vector_store_id:
+                        print(f"🐛 DEBUG: Preloaded vector_store_id={self.vector_store_id}")
+            except Exception as e:
+                print(f"⚠️ Could not preload vector store id: {e}")
+
+        # NOW call ensure_assistant (after vector_store_id is potentially loaded)
+        self.assistant = self.ensure_assistant()
+        if self.assistant:
+            print(f"🐛 DEBUG: Active assistant id={self.assistant.id} model={getattr(self.assistant,'model',None)}")
+        else:
+            print("❌ Failed to establish assistant")
+
         
         print("🐛 DEBUG: Loading wiki URL mapping...")
         self.wiki_url_mapping = self.load_wiki_url_mapping()
@@ -177,8 +190,95 @@ class AKSWikiAssistant:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
         print(f"💾 Results saved to {results_file}")
-    
-    
+
+    def ensure_assistant(self):
+        """
+        Ensure we have a retrieval assistant that supports file_search.
+        We still use gpt-5 (target generation model) separately for final answer refinement.
+        Logic:
+          - Try to reuse existing assistant if its model supports file_search.
+          - If target (gpt-5) is requested but unsupported with file_search, fall back to RETRIEVAL_ASSISTANT_MODEL (default gpt-4.1).
+          - Persist only the retrieval assistant id.
+        Sets:
+          self.generation_model -> the (possibly unsupported for tools) target model (e.g. gpt-5)
+          self.retrieval_model  -> the assistant's model actually used for file_search
+        """
+        self.generation_model = os.getenv("AZURE_OPENAI_MODEL_EMAIL", "gpt-5")
+        fallback_model = os.getenv("RETRIEVAL_ASSISTANT_MODEL", "gpt-4.1")
+        target_tool = "file_search"
+
+        existing_id = None
+        if os.path.exists(ASSISTANT_ID_FILE):
+            try:
+                with open(ASSISTANT_ID_FILE, "r") as f:
+                    existing_id = json.load(f).get("assistant_id")
+            except Exception as e:
+                print(f"⚠️ Failed reading {ASSISTANT_ID_FILE}: {e}")
+
+        # Try existing assistant
+        if existing_id:
+            try:
+                asst = self.client.beta.assistants.retrieve(existing_id)
+                current_model = getattr(asst, "model", None)
+                print(f"🐛 DEBUG: Existing assistant {existing_id} model={current_model}")
+                # Keep if model still OK (not None) and we can proceed
+                if current_model:
+                    self.retrieval_model = current_model
+                    # Reattach vector store idempotently
+                    if self.vector_store_id:
+                        try:
+                            self.client.beta.assistants.update(
+                                assistant_id=asst.id,
+                                tool_resources={"file_search": {"vector_store_ids": [self.vector_store_id]}}
+                            )
+                        except Exception as e:
+                            print(f"⚠️ Could not reattach vector store: {e}")
+                    return asst
+            except Exception as e:
+                print(f"⚠️ Could not retrieve existing assistant {existing_id}: {e}")
+
+        # Decide model for retrieval assistant
+        retrieval_model = fallback_model  # force fallback because gpt-5 rejects file_search
+        if self.generation_model != fallback_model:
+            print(f"ℹ️ '{self.generation_model}' chosen for generation; using '{retrieval_model}' for retrieval (file_search tool support).")
+
+        # Create retrieval assistant
+        tools = [{"type": target_tool}]
+        try:
+            asst = self.client.beta.assistants.create(
+                name="AKS Retrieval Assistant",
+                instructions=(
+                    "You retrieve authoritative Azure Kubernetes Service (AKS) documentation. "
+                    "Use file_search to gather source passages. Provide concise, source‑cited summaries."
+                ),
+                model=retrieval_model,
+                tools=tools,
+            )
+            print(f"✅ Created retrieval assistant {asst.id} on model {retrieval_model}")
+        except Exception as e:
+            print(f"❌ Failed to create retrieval assistant ({retrieval_model}): {e}")
+            return None
+
+        # Attach vector store
+        if self.vector_store_id:
+            try:
+                asst = self.client.beta.assistants.update(
+                    assistant_id=asst.id,
+                    tool_resources={"file_search": {"vector_store_ids": [self.vector_store_id]}}
+                )
+                print(f"🔗 Attached vector store {self.vector_store_id}")
+            except Exception as e:
+                print(f"⚠️ Could not attach vector store {self.vector_store_id}: {e}")
+
+        # Persist
+        try:
+            with open(ASSISTANT_ID_FILE, "w") as f:
+                json.dump({"assistant_id": asst.id}, f)
+        except Exception as e:
+            print(f"⚠️ Could not write {ASSISTANT_ID_FILE}: {e}")
+
+        self.retrieval_model = retrieval_model
+        return asst
     
     def load_wiki_url_mapping(self) -> Dict[str, str]:
         """Load the wiki URL mapping from file"""
@@ -571,9 +671,261 @@ class AKSWikiAssistant:
         
         return message_content
 
+    # def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
+    #     """Ask a question to the assistant"""
+    #     print(f"🐛 DEBUG: ask_question called with: question='{question}', return_response={return_response}, stream={stream}")
+        
+    #     if not self.thread_id:
+    #         print("🐛 DEBUG: Creating new thread...")
+    #         thread = self.client.beta.threads.create(
+    #             tool_resources={
+    #                 "file_search": {
+    #                     "vector_store_ids": [self.vector_store_id]
+    #                 }
+    #             }
+    #         )
+    #         self.thread_id = thread.id
+    #         print(f"🐛 DEBUG: ✅ Thread created: {self.thread_id}")
+    #     else:
+    #         print(f"🐛 DEBUG: Using existing thread: {self.thread_id}")
+        
+    #     # Add message to thread
+    #     print("🐛 DEBUG: Adding message to thread...")
+    #     self.client.beta.threads.messages.create(
+    #         thread_id=self.thread_id,
+    #         role="user",
+    #         content=question,  
+    #     )
+    #     print("🐛 DEBUG: ✅ Message added to thread")
+        
+    #     # Prepare tools list - use bing.definitions like the working wiki_assistant.py
+    #     # Prepare tools list - extract the JSON-serializable format
+    #     tools = [{"type": "file_search"}]
+    #     # if self.bing_tool:
+    #     #     try:
+    #     #         # The BingGroundingTool.definitions returns a list with the tool definition
+    #     #         # Extract the actual dict from the definitions
+    #     #         if hasattr(self.bing_tool, 'definitions') and self.bing_tool.definitions:
+    #     #             for tool_def in self.bing_tool.definitions:
+    #     #                 # Convert to dict if it's not already
+    #     #                 if hasattr(tool_def, '__dict__'):
+    #     #                     # It's an object, need to convert to dict
+    #     #                     tool_dict = {
+    #     #                         "type": "bing_grounding",
+    #     #                         "bing_grounding": {
+    #     #                             "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
+    #     #                         }
+    #     #                     }
+    #     #                     tools.append(tool_dict)
+    #     #                 else:
+    #     #                     # It's already a dict
+    #     #                     tools.append(tool_def)
+    #     #             print(f"🐛 DEBUG: Added Bing grounding tool")
+    #     #         else:
+    #     #             # Fallback to manual configuration
+    #     #             tools.append({
+    #     #                 "type": "bing_grounding",
+    #     #                 "bing_grounding": {
+    #     #                     "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
+    #     #                 }
+    #     #             })
+    #     #             print("🐛 DEBUG: Added Bing grounding tool (fallback)")
+    #     #     except Exception as e:
+    #     #         print(f"🐛 DEBUG: Error adding Bing tools: {e}")
+    #     #         print("🐛 DEBUG: Continuing without Bing grounding")
+    #     # else:
+    #     #     print("🐛 DEBUG: No Bing tool available")
+    #     print(f"🐛 DEBUG: Final tools array: {tools}")
+
+    #     # Run the assistant with explicit file search
+    #     print("🔄 Processing your question...")
+    #     print("🐛 DEBUG: About to create assistant run...")
+        
+    #     if stream:
+    #         print("🐛 DEBUG: Creating streaming run...")
+    #         try:
+    #             run = self.client.beta.threads.runs.create(
+    #                 thread_id=self.thread_id,
+    #                 assistant_id=self.assistant_id,
+    #                 instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+
+    #     SEARCH PRIORITY:
+    #     1. Search the uploaded documentation files for official AKS guidance
+    #     2. Use multiple search queries if needed to find comprehensive information
+    #     3. Look for related topics and cross-references
+
+    #     CITATION REQUIREMENTS:
+    #     - ALWAYS cite specific documents you reference using the file_search tool
+    #     - Include proper file names and relevant sections
+    #     - Provide clear links to source documentation
+    #     - If multiple sources cover the topic, synthesize the information
+
+    #     FORMAT:
+    #     - Clear answer with step-by-step guidance
+    #     - Include relevant examples and best practices from the documentation""",
+    #                 tools=tools,
+    #                 stream=True
+    #             )
+    #             print("🐛 DEBUG: ✅ Streaming run created successfully")
+    #         except Exception as e:
+    #             print(f"🐛 DEBUG: ❌ Error creating streaming run: {type(e).__name__}: {str(e)}")
+    #             raise
+            
+    #         response_content = ""
+    #         print("🐛 DEBUG: Starting to process stream events...")
+            
+    #         try:
+    #             for event in run:
+    #                 print(f"🐛 DEBUG: Stream event: {event.event}")
+    #                 if event.event == 'thread.message.delta':
+    #                     for content in event.data.delta.content:
+    #                         if hasattr(content, 'text') and hasattr(content.text, 'value'):
+    #                             chunk = content.text.value
+    #                             response_content += chunk
+    #                             yield chunk
+    #                 elif event.event == 'thread.run.completed':
+    #                     print("🐛 DEBUG: Run completed, processing citations...")
+    #                     # Process final content with citations
+    #                     messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
+    #                     for message in messages:
+    #                         if message.role == "assistant":
+    #                             for content in message.content:
+    #                                 if hasattr(content, 'text'):
+    #                                     text_content = content.text.value
+    #                                     annotations = getattr(content.text, 'annotations', [])
+    #                                     final_content = self.process_citations(text_content, annotations)
+                                        
+    #                                     # Send any remaining content
+    #                                     if len(final_content) > len(response_content):
+    #                                         remaining = final_content[len(response_content):]
+    #                                         yield remaining
+    #                                     print("🐛 DEBUG: ✅ Streaming response completed")
+    #                                     return
+    #         except Exception as e:
+    #             print(f"🐛 DEBUG: ❌ Error processing stream: {type(e).__name__}: {str(e)}")
+    #             raise
+    #     else:
+    #         print("🐛 DEBUG: Creating non-streaming run...")
+    #         try:
+    #             run = self.client.beta.threads.runs.create_and_poll(
+    #                 thread_id=self.thread_id,
+    #                 assistant_id=self.assistant_id,
+    #                 instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+
+    #     SEARCH PRIORITY:
+    #     1. Search the uploaded documentation files for official AKS guidance
+    #     2. Use multiple search queries if needed to find comprehensive information
+    #     3. Look for related topics and cross-references
+
+    #     CITATION REQUIREMENTS:
+    #     - ALWAYS cite specific documents you reference using the file_search tool
+    #     - Include proper file names and relevant sections
+    #     - Provide clear links to source documentation
+    #     - If multiple sources cover the topic, synthesize the information
+
+    #     FORMAT:
+    #     - Clear answer with step-by-step guidance
+    #     - Use HTML links for citations: <a href="URL" target="_blank">Link Text</a>
+    #     - Use basic HTML formatting: <strong>bold</strong>, <em>italic</em>, <br> for line breaks
+    #     - Include relevant examples and best practices from the documentation
+    #     - Do not use markdown - use HTML formatting only""",
+    #                 tools=tools,
+    #             )
+    #             print(f"🐛 DEBUG: ✅ Non-streaming run created with status: {run.status}")
+    #         except Exception as e:
+    #             print(f"🐛 DEBUG: ❌ Error creating non-streaming run: {type(e).__name__}: {str(e)}")
+    #             raise
+        
+    #     if run.status == 'completed':
+    #         print("🐛 DEBUG: Run completed successfully, processing messages...")
+    #         # Get messages
+    #         messages = self.client.beta.threads.messages.list(
+    #             thread_id=self.thread_id
+    #         )
+    #         for message in messages:
+    #             if message.role == "assistant":
+    #                 for content in message.content:
+    #                     if hasattr(content, 'text'):
+    #                         text_content = content.text.value
+    #                         annotations = getattr(content.text, 'annotations', [])
+                            
+    #                         # Process citations
+    #                         final_content = self.process_citations(text_content, annotations)
+                            
+    #                         if return_response:
+    #                             print("🐛 DEBUG: ✅ Returning response")
+    #                             return final_content
+    #                         else:
+    #                             print(f"\n🤖 Assistant:\n{final_content}\n")
+    #                             print("🐛 DEBUG: ✅ Response printed")
+    #                             return final_content
+    #     else:
+    #         print(f"❌ Run failed with status: {run.status}")
+    #         print(f"🐛 DEBUG: ❌ Run failed with status: {run.status}")
+
     def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
-        """Ask a question to the assistant"""
-        print(f"🐛 DEBUG: ask_question called with: question='{question}', return_response={return_response}, stream={stream}")
+        """
+        Two-phase approach:
+        1. gpt-4.1: ONLY retrieves relevant content from vector store with citations
+        2. gpt-5: Generates the actual answer using retrieved content
+        """
+        if not self.assistant:
+            error_msg = "❌ No assistant available"
+            print(error_msg)
+            if stream:
+                yield error_msg
+                return
+            return None
+
+        # Add this right after the "if not self.assistant:" check
+        aks_keywords = ['aks', 'kubernetes', 'azure kubernetes service', 'cluster', 'node', 'pod', 'helm', 'kubectl']
+        is_aks_question = any(keyword in question.lower() for keyword in aks_keywords)
+
+        if not is_aks_question:
+            print("🐛 DEBUG: Non-AKS question detected, using direct gpt-5...")
+            try:
+                if stream:
+                    # For streaming, use the streaming API
+                    comp = self.client.chat.completions.create(
+                        model=self.generation_model,
+                        messages=[
+                            {"role": "system", "content": "Answer the question directly and accurately."},
+                            {"role": "user", "content": question}
+                        ],
+                        max_completion_tokens=800,
+                        stream=True
+                    )
+                    for chunk in comp:
+                        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                            yield chunk.choices[0].delta.content
+                    return
+                else:
+                    # Non-streaming version
+                    comp = self.client.chat.completions.create(
+                        model=self.generation_model,
+                        messages=[
+                            {"role": "system", "content": "Answer the question directly and accurately."},
+                            {"role": "user", "content": question}
+                        ],
+                        max_completion_tokens=800
+                    )
+                    direct_answer = comp.choices[0].message.content
+                    if return_response:
+                        return direct_answer
+                    print(f"\n🤖 Answer (direct gpt-5):")
+                    print(direct_answer)
+                    return direct_answer
+            except Exception as e:
+                error_msg = f"❌ Direct gpt-5 failed: {e}"
+                print(error_msg)
+                if stream:
+                    yield error_msg
+                    return
+                return None
+
+        # Phase 1: Pure retrieval (gpt-4.1 as retrieval engine)
+        if stream:
+            yield "🔍 Searching AKS documentation...\n\n"
         
         if not self.thread_id:
             print("🐛 DEBUG: Creating new thread...")
@@ -586,183 +938,191 @@ class AKSWikiAssistant:
             )
             self.thread_id = thread.id
             print(f"🐛 DEBUG: ✅ Thread created: {self.thread_id}")
-        else:
-            print(f"🐛 DEBUG: Using existing thread: {self.thread_id}")
-        
-        # Add message to thread
+
         print("🐛 DEBUG: Adding message to thread...")
         self.client.beta.threads.messages.create(
             thread_id=self.thread_id,
             role="user",
-            content=question,  
+            content=question
         )
-        print("🐛 DEBUG: ✅ Message added to thread")
-        
-        # Prepare tools list - use bing.definitions like the working wiki_assistant.py
-        # Prepare tools list - extract the JSON-serializable format
-        tools = [{"type": "file_search"}]
-        # if self.bing_tool:
-        #     try:
-        #         # The BingGroundingTool.definitions returns a list with the tool definition
-        #         # Extract the actual dict from the definitions
-        #         if hasattr(self.bing_tool, 'definitions') and self.bing_tool.definitions:
-        #             for tool_def in self.bing_tool.definitions:
-        #                 # Convert to dict if it's not already
-        #                 if hasattr(tool_def, '__dict__'):
-        #                     # It's an object, need to convert to dict
-        #                     tool_dict = {
-        #                         "type": "bing_grounding",
-        #                         "bing_grounding": {
-        #                             "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
-        #                         }
-        #                     }
-        #                     tools.append(tool_dict)
-        #                 else:
-        #                     # It's already a dict
-        #                     tools.append(tool_def)
-        #             print(f"🐛 DEBUG: Added Bing grounding tool")
-        #         else:
-        #             # Fallback to manual configuration
-        #             tools.append({
-        #                 "type": "bing_grounding",
-        #                 "bing_grounding": {
-        #                     "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
-        #                 }
-        #             })
-        #             print("🐛 DEBUG: Added Bing grounding tool (fallback)")
-        #     except Exception as e:
-        #         print(f"🐛 DEBUG: Error adding Bing tools: {e}")
-        #         print("🐛 DEBUG: Continuing without Bing grounding")
-        # else:
-        #     print("🐛 DEBUG: No Bing tool available")
-        print(f"🐛 DEBUG: Final tools array: {tools}")
 
-        # Run the assistant with explicit file search
-        print("🔄 Processing your question...")
-        print("🐛 DEBUG: About to create assistant run...")
+        # Create run with RETRIEVAL-FOCUSED instructions
+        print("🐛 DEBUG: Creating retrieval run...")
+        run = self.client.beta.threads.runs.create(
+            thread_id=self.thread_id,
+            assistant_id=self.assistant.id,
+            instructions="""You are a RETRIEVAL assistant. Your job is to find and cite relevant content from the AKS documentation.
+
+    RETRIEVAL INSTRUCTIONS:
+    1. Use file_search extensively to find ALL relevant information
+    2. ALWAYS include citations with file names
+    3. Provide comprehensive content - don't summarize or shorten
+    4. Include multiple sources if they contain relevant information
+    5. Your response should be raw retrieval content with citations, not a polished answer
+
+    Format your response as:
+    - Raw content from documents
+    - Clear citations: [filename.md] or similar
+    - Multiple sections if relevant""",
+            tools=[{"type": "file_search"}],
+        )
+        print(f"🐛 DEBUG: Initial run status={run.status} run_id={run.id}")
+
+        # Poll for completion
+        while True:
+            run = self.client.beta.threads.runs.retrieve(thread_id=self.thread_id, run_id=run.id)
+            print(f"🐛 DEBUG: Poll run status={run.status}")
+            if run.status in ["completed", "failed", "cancelled"]:
+                break
+            if getattr(run, 'required_action', None):
+                print(f"🐛 DEBUG: Run requires action: {run.required_action}")
+                if stream:
+                    yield f"❌ Run requires action: {run.required_action}"
+                    return
+                return None
+            time.sleep(1)
+
+        if run.status != "completed":
+            err = getattr(run, "last_error", None)
+            error_msg = f"❌ Retrieval run failed status={run.status} last_error={err}"
+            print(error_msg)
+            if stream:
+                yield error_msg
+                return
+            return None
+
+        # Extract retrieved content
+        print("🐛 DEBUG: Extracting retrieved content...")
+        messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
+        print(f"🐛 DEBUG: Found {len(messages.data)} messages")
         
-        if stream:
-            print("🐛 DEBUG: Creating streaming run...")
+        retrieved_content = ""
+        citations = []
+        
+        for m in messages.data:
+            print(f"🐛 DEBUG: Message role={m.role}, content_count={len(m.content)}")
+            if m.role == "assistant":
+                for i, c in enumerate(m.content):
+                    print(f"🐛 DEBUG: Content {i} type={type(c)}, has_text={hasattr(c, 'text')}")
+                    if hasattr(c, "text"):
+                        text_value = getattr(c.text, "value", "")
+                        annotations = getattr(c.text, "annotations", [])
+                        print(f"🐛 DEBUG: Text length={len(text_value)}, annotations={len(annotations)}")
+                        if text_value:
+                            retrieved_content = text_value
+                            citations = annotations
+                            print(f"🐛 DEBUG: ✅ Extracted {len(retrieved_content)} chars, {len(citations)} citations")
+                            break
+                if retrieved_content:
+                    break
+        
+        if not retrieved_content:
+            fallback_msg = "❌ No content retrieved from vector store, using direct gpt-5..."
+            print(fallback_msg)
+            if stream:
+                yield "⚠️ No specific AKS documentation found, providing general guidance...\n\n"
+            
             try:
-                run = self.client.beta.threads.runs.create(
-                    thread_id=self.thread_id,
-                    assistant_id=self.assistant_id,
-                    instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+                if stream:
+                    comp = self.client.chat.completions.create(
+                        model=self.generation_model,
+                        messages=[
+                            {"role": "system", "content": "You are an Azure Kubernetes Service expert. Answer the question using your knowledge of AKS and Kubernetes."},
+                            {"role": "user", "content": question}
+                        ],
+                        max_completion_tokens=800,
+                        stream=True
+                    )
+                    for chunk in comp:
+                        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                            yield chunk.choices[0].delta.content
+                    return
+                else:
+                    comp = self.client.chat.completions.create(
+                        model=self.generation_model,
+                        messages=[
+                            {"role": "system", "content": "Answer the question directly and accurately."},
+                            {"role": "user", "content": question}
+                        ],
+                        max_completion_tokens=800
+                    )
+                    direct_answer = comp.choices[0].message.content
+                    print(f"\n🤖 Answer (direct gpt-5):")
+                    print(direct_answer)
+                    return direct_answer if return_response else direct_answer
+            except Exception as e:
+                error_msg = f"❌ Direct gpt-5 failed: {e}"
+                print(error_msg)
+                if stream:
+                    yield error_msg
+                    return
+                return None
 
-        SEARCH PRIORITY:
-        1. Search the uploaded documentation files for official AKS guidance
-        2. Use multiple search queries if needed to find comprehensive information
-        3. Look for related topics and cross-references
+        # Process citations from retrieval
+        print(f"🐛 DEBUG: Processing {len(citations)} citations...")
+        retrieved_with_citations = self.process_citations(retrieved_content, citations)
 
-        CITATION REQUIREMENTS:
-        - ALWAYS cite specific documents you reference using the file_search tool
-        - Include proper file names and relevant sections
-        - Provide clear links to source documentation
-        - If multiple sources cover the topic, synthesize the information
+        if stream:
+            yield "📝 Generating comprehensive response...\n\n"
 
-        FORMAT:
-        - Clear answer with step-by-step guidance
-        - Include relevant examples and best practices from the documentation""",
-                    tools=tools,
+        # Phase 2: gpt-5 generates final answer using retrieved content
+        print(f"🐛 DEBUG: Generating final answer with gpt-5...")
+        try:
+            final_prompt = f"""You are an expert on Azure Kubernetes Service. Answer the following question using ONLY the provided retrieved content. Do not add information not found in the retrieved content.
+
+    QUESTION: {question}
+
+    RETRIEVED CONTENT WITH CITATIONS:
+    {retrieved_with_citations}
+
+    INSTRUCTIONS:
+    - Provide a clear, comprehensive answer
+    - Maintain all citations from the retrieved content
+    - Structure the response for readability
+    - Do not add facts not present in the retrieved content
+    - If the retrieved content doesn't fully answer the question, acknowledge what information is available"""
+
+            if stream:
+                comp = self.client.chat.completions.create(
+                    model=self.generation_model,
+                    messages=[
+                        {"role": "system", "content": "You are an AKS expert. Answer using only the provided retrieved content."},
+                        {"role": "user", "content": final_prompt}
+                    ],
+                    max_completion_tokens=1200,
                     stream=True
                 )
-                print("🐛 DEBUG: ✅ Streaming run created successfully")
-            except Exception as e:
-                print(f"🐛 DEBUG: ❌ Error creating streaming run: {type(e).__name__}: {str(e)}")
-                raise
-            
-            response_content = ""
-            print("🐛 DEBUG: Starting to process stream events...")
-            
-            try:
-                for event in run:
-                    print(f"🐛 DEBUG: Stream event: {event.event}")
-                    if event.event == 'thread.message.delta':
-                        for content in event.data.delta.content:
-                            if hasattr(content, 'text') and hasattr(content.text, 'value'):
-                                chunk = content.text.value
-                                response_content += chunk
-                                yield chunk
-                    elif event.event == 'thread.run.completed':
-                        print("🐛 DEBUG: Run completed, processing citations...")
-                        # Process final content with citations
-                        messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
-                        for message in messages:
-                            if message.role == "assistant":
-                                for content in message.content:
-                                    if hasattr(content, 'text'):
-                                        text_content = content.text.value
-                                        annotations = getattr(content.text, 'annotations', [])
-                                        final_content = self.process_citations(text_content, annotations)
-                                        
-                                        # Send any remaining content
-                                        if len(final_content) > len(response_content):
-                                            remaining = final_content[len(response_content):]
-                                            yield remaining
-                                        print("🐛 DEBUG: ✅ Streaming response completed")
-                                        return
-            except Exception as e:
-                print(f"🐛 DEBUG: ❌ Error processing stream: {type(e).__name__}: {str(e)}")
-                raise
-        else:
-            print("🐛 DEBUG: Creating non-streaming run...")
-            try:
-                run = self.client.beta.threads.runs.create_and_poll(
-                    thread_id=self.thread_id,
-                    assistant_id=self.assistant_id,
-                    instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
-
-        SEARCH PRIORITY:
-        1. Search the uploaded documentation files for official AKS guidance
-        2. Use multiple search queries if needed to find comprehensive information
-        3. Look for related topics and cross-references
-
-        CITATION REQUIREMENTS:
-        - ALWAYS cite specific documents you reference using the file_search tool
-        - Include proper file names and relevant sections
-        - Provide clear links to source documentation
-        - If multiple sources cover the topic, synthesize the information
-
-        FORMAT:
-        - Clear answer with step-by-step guidance
-        - Use HTML links for citations: <a href="URL" target="_blank">Link Text</a>
-        - Use basic HTML formatting: <strong>bold</strong>, <em>italic</em>, <br> for line breaks
-        - Include relevant examples and best practices from the documentation
-        - Do not use markdown - use HTML formatting only""",
-                    tools=tools,
+                for chunk in comp:
+                    if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                print(f"🐛 DEBUG: ✅ Generated streaming answer with gpt-5")
+                return
+            else:
+                comp = self.client.chat.completions.create(
+                    model=self.generation_model,
+                    messages=[
+                        {"role": "system", "content": "You are an AKS expert. Answer using only the provided retrieved content."},
+                        {"role": "user", "content": final_prompt}
+                    ],
+                    max_completion_tokens=1200
                 )
-                print(f"🐛 DEBUG: ✅ Non-streaming run created with status: {run.status}")
-            except Exception as e:
-                print(f"🐛 DEBUG: ❌ Error creating non-streaming run: {type(e).__name__}: {str(e)}")
-                raise
-        
-        if run.status == 'completed':
-            print("🐛 DEBUG: Run completed successfully, processing messages...")
-            # Get messages
-            messages = self.client.beta.threads.messages.list(
-                thread_id=self.thread_id
-            )
-            for message in messages:
-                if message.role == "assistant":
-                    for content in message.content:
-                        if hasattr(content, 'text'):
-                            text_content = content.text.value
-                            annotations = getattr(content.text, 'annotations', [])
-                            
-                            # Process citations
-                            final_content = self.process_citations(text_content, annotations)
-                            
-                            if return_response:
-                                print("🐛 DEBUG: ✅ Returning response")
-                                return final_content
-                            else:
-                                print(f"\n🤖 Assistant:\n{final_content}\n")
-                                print("🐛 DEBUG: ✅ Response printed")
-                                return final_content
-        else:
-            print(f"❌ Run failed with status: {run.status}")
-            print(f"🐛 DEBUG: ❌ Run failed with status: {run.status}")
+                final_answer = comp.choices[0].message.content
+                print(f"🐛 DEBUG: ✅ Generated final answer with gpt-5")
+                
+                if return_response:
+                    return final_answer
 
+                print(f"\n🤖 Answer (gpt-5 with retrieved context):")
+                print(final_answer)
+                return final_answer
+                
+        except Exception as e:
+            error_msg = f"⚠️ gpt-5 generation failed, returning raw retrieved content: {e}"
+            print(error_msg)
+            if stream:
+                yield f"\n\n⚠️ Generation failed, here's the raw retrieved content:\n\n{retrieved_with_citations}"
+                return
+            return retrieved_with_citations
     def interactive_mode(self) -> None:
         """Interactive question-answer mode"""
         print("\n💬 Interactive mode - Type 'exit' to quit\n")

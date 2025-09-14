@@ -111,14 +111,19 @@ def generate_response():
                 full_question = f"{question}\n\nContext: {context}" if context else question
                 
                 # Use streaming version
+                response_started = False
                 for chunk in assistant.ask_question(full_question, stream=True):
+                    if not response_started:
+                        yield "data: {\"status\": \"generating\"}\n\n"
+                        response_started = True
                     yield f"data: {json.dumps({'content': chunk})}\n\n"
                 
                 yield "data: {\"status\": \"complete\"}\n\n"
                 
             except Exception as e:
+                print(f"❌ Streaming error: {e}")
+                traceback.print_exc()
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        
         return Response(generate(), mimetype='text/event-stream')
     
     except Exception as e:
