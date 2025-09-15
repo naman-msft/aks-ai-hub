@@ -449,7 +449,7 @@ class AKSWikiAssistant:
             test_response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[{"role": "user", "content": "test"}],
-                max_tokens=10
+                # max_tokens=10
             )
             print("✅ Connection to Azure OpenAI successful")
         except Exception as e:
@@ -863,11 +863,281 @@ class AKSWikiAssistant:
     #         print(f"❌ Run failed with status: {run.status}")
     #         print(f"🐛 DEBUG: ❌ Run failed with status: {run.status}")
 
+    # def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
+    #     """
+    #     Two-phase approach:
+    #     1. gpt-4.1: ONLY retrieves relevant content from vector store with citations
+    #     2. gpt-5: Generates the actual answer using retrieved content
+    #     """
+    #     if not self.assistant:
+    #         error_msg = "❌ No assistant available"
+    #         print(error_msg)
+    #         if stream:
+    #             yield error_msg
+    #             return
+    #         return None
+        
+    #     # Simple approach: Default to AKS retrieval unless it's clearly a general/personal question
+    #     general_keywords = [
+    #         'weather', 'time', 'date', 'hello', 'hi', 'how are you', 'good morning', 
+    #         'good afternoon', 'good evening', 'what are you', 'who are you', 
+    #         'knowledge cutoff', 'what model', 'what version'
+    #     ]
+        
+    #     is_general_question = any(keyword in question.lower() for keyword in general_keywords)
+        
+    #     print(f"🐛 DEBUG: Question: '{question[:100]}...'")
+    #     print(f"🐛 DEBUG: is_general_question: {is_general_question}")
+        
+    #     if is_general_question:
+    #         print("🐛 DEBUG: General question detected, using direct gpt-5...")
+    #         try:
+    #             if stream:
+    #                 comp = self.client.chat.completions.create(
+    #                     model=self.generation_model,
+    #                     messages=[
+    #                         {"role": "system", "content": "Answer the question directly and accurately."},
+    #                         {"role": "user", "content": question}
+    #                     ],
+    #                     # max_completion_tokens=800,
+    #                     stream=True
+    #                 )
+    #                 for chunk in comp:
+    #                     if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+    #                         yield chunk.choices[0].delta.content
+    #                 return
+    #             else:
+    #                 comp = self.client.chat.completions.create(
+    #                     model=self.generation_model,
+    #                     messages=[
+    #                         {"role": "system", "content": "Answer the question directly and accurately."},
+    #                         {"role": "user", "content": question}
+    #                     ],
+    #                     # max_completion_tokens=800
+    #                 )
+    #                 direct_answer = comp.choices[0].message.content
+    #                 if return_response:
+    #                     return direct_answer
+    #                 print(f"\n🤖 Answer (direct gpt-5):")
+    #                 print(direct_answer)
+    #                 return direct_answer
+    #         except Exception as e:
+    #             error_msg = f"❌ Direct gpt-5 failed: {e}"
+    #             print(error_msg)
+    #             if stream:
+    #                 yield error_msg
+    #                 return
+    #             return None
+
+    #     # For all other questions, use AKS retrieval + GPT-5 generation
+    #     print("🐛 DEBUG: Using AKS retrieval + GPT-5 generation...")
+
+    #     # Phase 1: Pure retrieval (gpt-4.1 as retrieval engine)
+    #     # Don't yield process messages for streaming - only print them
+    #     print("🔍 Searching AKS documentation...")
+        
+    #     if not self.thread_id:
+    #         print("🐛 DEBUG: Creating new thread...")
+    #         thread = self.client.beta.threads.create(
+    #             tool_resources={
+    #                 "file_search": {
+    #                     "vector_store_ids": [self.vector_store_id]
+    #                 }
+    #             }
+    #         )
+    #         self.thread_id = thread.id
+    #         print(f"🐛 DEBUG: ✅ Thread created: {self.thread_id}")
+
+    #     print("🐛 DEBUG: Adding message to thread...")
+    #     self.client.beta.threads.messages.create(
+    #         thread_id=self.thread_id,
+    #         role="user",
+    #         content=question
+    #     )
+
+    #     # Create run with RETRIEVAL-FOCUSED instructions
+    #     print("🐛 DEBUG: Creating retrieval run...")
+    #     run = self.client.beta.threads.runs.create(
+    #         thread_id=self.thread_id,
+    #         assistant_id=self.assistant.id,
+    #         instructions="""You are a RETRIEVAL assistant. Your job is to find and cite relevant content from the AKS documentation.
+
+    # RETRIEVAL INSTRUCTIONS:
+    # 1. Use file_search extensively to find ALL relevant information
+    # 2. ALWAYS include citations with file names
+    # 3. Provide comprehensive content - don't summarize or shorten
+    # 4. Include multiple sources if they contain relevant information
+    # 5. Your response should be raw retrieval content with citations, not a polished answer
+
+    # Format your response as:
+    # - Raw content from documents
+    # - Clear citations: [filename.md] or similar
+    # - Multiple sections if relevant""",
+    #         tools=[{"type": "file_search"}],
+    #     )
+    #     print(f"🐛 DEBUG: Initial run status={run.status} run_id={run.id}")
+
+    #     # Poll for completion
+    #     while True:
+    #         run = self.client.beta.threads.runs.retrieve(thread_id=self.thread_id, run_id=run.id)
+    #         print(f"🐛 DEBUG: Poll run status={run.status}")
+    #         if run.status in ["completed", "failed", "cancelled"]:
+    #             break
+    #         if getattr(run, 'required_action', None):
+    #             print(f"🐛 DEBUG: Run requires action: {run.required_action}")
+    #             if stream:
+    #                 yield f"❌ Run requires action: {run.required_action}"
+    #                 return
+    #             return None
+    #         time.sleep(1)
+
+    #     if run.status != "completed":
+    #         err = getattr(run, "last_error", None)
+    #         error_msg = f"❌ Retrieval run failed status={run.status} last_error={err}"
+    #         print(error_msg)
+    #         if stream:
+    #             yield error_msg
+    #             return
+    #         return None
+
+    #     # Extract retrieved content
+    #     print("🐛 DEBUG: Extracting retrieved content...")
+    #     messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
+    #     print(f"🐛 DEBUG: Found {len(messages.data)} messages")
+        
+    #     retrieved_content = ""
+    #     citations = []
+        
+    #     for m in messages.data:
+    #         print(f"🐛 DEBUG: Message role={m.role}, content_count={len(m.content)}")
+    #         if m.role == "assistant":
+    #             for i, c in enumerate(m.content):
+    #                 print(f"🐛 DEBUG: Content {i} type={type(c)}, has_text={hasattr(c, 'text')}")
+    #                 if hasattr(c, "text"):
+    #                     text_value = getattr(c.text, "value", "")
+    #                     annotations = getattr(c.text, "annotations", [])
+    #                     print(f"🐛 DEBUG: Text length={len(text_value)}, annotations={len(annotations)}")
+    #                     if text_value:
+    #                         retrieved_content = text_value
+    #                         citations = annotations
+    #                         print(f"🐛 DEBUG: ✅ Extracted {len(retrieved_content)} chars, {len(citations)} citations")
+    #                         break
+    #             if retrieved_content:
+    #                 break
+        
+    #     if not retrieved_content:
+    #         fallback_msg = "❌ No content retrieved from vector store, using direct gpt-5..."
+    #         print(fallback_msg)
+            
+    #         try:
+    #             if stream:
+    #                 comp = self.client.chat.completions.create(
+    #                     model=self.generation_model,
+    #                     messages=[
+    #                         {"role": "system", "content": "You are an Azure Kubernetes Service expert. Answer the question using your knowledge of AKS and Kubernetes."},
+    #                         {"role": "user", "content": question}
+    #                     ],
+    #                     # max_completion_tokens=800,
+    #                     stream=True
+    #                 )
+    #                 for chunk in comp:
+    #                     if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+    #                         yield chunk.choices[0].delta.content
+    #                 return
+    #             else:
+    #                 comp = self.client.chat.completions.create(
+    #                     model=self.generation_model,
+    #                     messages=[
+    #                         {"role": "system", "content": "Answer the question directly and accurately."},
+    #                         {"role": "user", "content": question}
+    #                     ],
+    #                     # max_completion_tokens=800
+    #                 )
+    #                 direct_answer = comp.choices[0].message.content
+    #                 print(f"\n🤖 Answer (direct gpt-5):")
+    #                 print(direct_answer)
+    #                 return direct_answer if return_response else direct_answer
+    #         except Exception as e:
+    #             error_msg = f"❌ Direct gpt-5 failed: {e}"
+    #             print(error_msg)
+    #             if stream:
+    #                 yield error_msg
+    #                 return
+    #             return None
+
+    #     # Process citations from retrieval
+    #     print(f"🐛 DEBUG: Processing {len(citations)} citations...")
+    #     retrieved_with_citations = self.process_citations(retrieved_content, citations)
+
+    #     # Don't yield process messages for streaming - only print them
+    #     print("📝 Generating comprehensive response...")
+
+    #     # Phase 2: gpt-5 generates final answer using retrieved content
+    #     print(f"🐛 DEBUG: Generating final answer with gpt-5...")
+    #     try:
+    #         final_prompt = f"""You are an expert on Azure Kubernetes Service. Answer the following question using ONLY the provided retrieved content. Do not add information not found in the retrieved content.
+
+    # QUESTION: {question}
+
+    # RETRIEVED CONTENT WITH CITATIONS:
+    # {retrieved_with_citations}
+
+    # INSTRUCTIONS:
+    # - Provide a clear, comprehensive answer
+    # - Maintain all citations from the retrieved content
+    # - Structure the response for readability
+    # - Do not add facts not present in the retrieved content
+    # - If the retrieved content doesn't fully answer the question, acknowledge what information is available"""
+
+    #         if stream:
+    #             comp = self.client.chat.completions.create(
+    #                 model=self.generation_model,
+    #                 messages=[
+    #                     {"role": "system", "content": "You are an AKS expert. Answer using only the provided retrieved content."},
+    #                     {"role": "user", "content": final_prompt}
+    #                 ],
+    #                 # max_completion_tokens=1200,
+    #                 stream=True
+    #             )
+    #             for chunk in comp:
+    #                 if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+    #                     yield chunk.choices[0].delta.content
+    #             print(f"🐛 DEBUG: ✅ Generated streaming answer with gpt-5")
+    #             return
+    #         else:
+    #             comp = self.client.chat.completions.create(
+    #                 model=self.generation_model,
+    #                 messages=[
+    #                     {"role": "system", "content": "You are an AKS expert. Answer using only the provided retrieved content."},
+    #                     {"role": "user", "content": final_prompt}
+    #                 ]
+    #                 # max_completion_tokens=1200
+    #             )
+    #             final_answer = comp.choices[0].message.content
+    #             print(f"🐛 DEBUG: ✅ Generated final answer with gpt-5")
+                
+    #             if return_response:
+    #                 return final_answer
+
+    #             print(f"\n🤖 Answer (gpt-5 with retrieved context):")
+    #             print(final_answer)
+    #             return final_answer
+                
+    #     except Exception as e:
+    #         error_msg = f"⚠️ gpt-5 generation failed, returning raw retrieved content: {e}"
+    #         print(error_msg)
+    #         if stream:
+    #             yield f"\n\n⚠️ Generation failed, here's the raw retrieved content:\n\n{retrieved_with_citations}"
+    #             return
+    #         return retrieved_with_citations
+
     def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
         """
         Two-phase approach:
         1. gpt-4.1: ONLY retrieves relevant content from vector store with citations
         2. gpt-5: Generates the actual answer using retrieved content
+        
+        ALL questions go through AKS retrieval - no routing logic.
         """
         if not self.assistant:
             error_msg = "❌ No assistant available"
@@ -877,55 +1147,12 @@ class AKSWikiAssistant:
                 return
             return None
 
-        # Add this right after the "if not self.assistant:" check
-        aks_keywords = ['aks', 'kubernetes', 'azure kubernetes service', 'cluster', 'node', 'pod', 'helm', 'kubectl']
-        is_aks_question = any(keyword in question.lower() for keyword in aks_keywords)
-
-        if not is_aks_question:
-            print("🐛 DEBUG: Non-AKS question detected, using direct gpt-5...")
-            try:
-                if stream:
-                    # For streaming, use the streaming API
-                    comp = self.client.chat.completions.create(
-                        model=self.generation_model,
-                        messages=[
-                            {"role": "system", "content": "Answer the question directly and accurately."},
-                            {"role": "user", "content": question}
-                        ],
-                        max_completion_tokens=800,
-                        stream=True
-                    )
-                    for chunk in comp:
-                        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                            yield chunk.choices[0].delta.content
-                    return
-                else:
-                    # Non-streaming version
-                    comp = self.client.chat.completions.create(
-                        model=self.generation_model,
-                        messages=[
-                            {"role": "system", "content": "Answer the question directly and accurately."},
-                            {"role": "user", "content": question}
-                        ],
-                        max_completion_tokens=800
-                    )
-                    direct_answer = comp.choices[0].message.content
-                    if return_response:
-                        return direct_answer
-                    print(f"\n🤖 Answer (direct gpt-5):")
-                    print(direct_answer)
-                    return direct_answer
-            except Exception as e:
-                error_msg = f"❌ Direct gpt-5 failed: {e}"
-                print(error_msg)
-                if stream:
-                    yield error_msg
-                    return
-                return None
+        # ALL questions use AKS retrieval + GPT-5 generation
+        print("🐛 DEBUG: Using AKS retrieval + GPT-5 generation for all questions...")
 
         # Phase 1: Pure retrieval (gpt-4.1 as retrieval engine)
-        if stream:
-            yield "🔍 Searching AKS documentation...\n\n"
+        # Don't yield process messages for streaming - only print them
+        print("🔍 Searching AKS documentation...")
         
         if not self.thread_id:
             print("🐛 DEBUG: Creating new thread...")
@@ -953,17 +1180,17 @@ class AKSWikiAssistant:
             assistant_id=self.assistant.id,
             instructions="""You are a RETRIEVAL assistant. Your job is to find and cite relevant content from the AKS documentation.
 
-    RETRIEVAL INSTRUCTIONS:
-    1. Use file_search extensively to find ALL relevant information
-    2. ALWAYS include citations with file names
-    3. Provide comprehensive content - don't summarize or shorten
-    4. Include multiple sources if they contain relevant information
-    5. Your response should be raw retrieval content with citations, not a polished answer
+RETRIEVAL INSTRUCTIONS:
+1. Use file_search extensively to find ALL relevant information
+2. ALWAYS include citations with file names
+3. Provide comprehensive content - don't summarize or shorten
+4. Include multiple sources if they contain relevant information
+5. Your response should be raw retrieval content with citations, not a polished answer
 
-    Format your response as:
-    - Raw content from documents
-    - Clear citations: [filename.md] or similar
-    - Multiple sections if relevant""",
+Format your response as:
+- Raw content from documents
+- Clear citations: [filename.md] or similar
+- Multiple sections if relevant""",
             tools=[{"type": "file_search"}],
         )
         print(f"🐛 DEBUG: Initial run status={run.status} run_id={run.id}")
@@ -994,135 +1221,93 @@ class AKSWikiAssistant:
         # Extract retrieved content
         print("🐛 DEBUG: Extracting retrieved content...")
         messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
-        print(f"🐛 DEBUG: Found {len(messages.data)} messages")
         
+        print(f"🐛 DEBUG: Found {len(messages.data)} messages")
         retrieved_content = ""
         citations = []
         
-        for m in messages.data:
-            print(f"🐛 DEBUG: Message role={m.role}, content_count={len(m.content)}")
-            if m.role == "assistant":
-                for i, c in enumerate(m.content):
-                    print(f"🐛 DEBUG: Content {i} type={type(c)}, has_text={hasattr(c, 'text')}")
-                    if hasattr(c, "text"):
-                        text_value = getattr(c.text, "value", "")
-                        annotations = getattr(c.text, "annotations", [])
-                        print(f"🐛 DEBUG: Text length={len(text_value)}, annotations={len(annotations)}")
-                        if text_value:
-                            retrieved_content = text_value
+        for message in messages.data:
+            print(f"🐛 DEBUG: Message role={message.role}, content_count={len(message.content)}")
+            if message.role == "assistant":
+                for i, content in enumerate(message.content):
+                    print(f"🐛 DEBUG: Content {i} type={type(content)}, has_text={hasattr(content, 'text')}")
+                    if hasattr(content, 'text'):
+                        text_content = content.text.value
+                        annotations = getattr(content.text, 'annotations', [])
+                        print(f"🐛 DEBUG: Text length={len(text_content)}, annotations={len(annotations)}")
+                        
+                        if text_content:
+                            retrieved_content = text_content
                             citations = annotations
-                            print(f"🐛 DEBUG: ✅ Extracted {len(retrieved_content)} chars, {len(citations)} citations")
+                            print(f"🐛 DEBUG: ✅ Extracted {len(text_content)} chars, {len(citations)} citations")
                             break
                 if retrieved_content:
                     break
-        
-        if not retrieved_content:
-            fallback_msg = "❌ No content retrieved from vector store, using direct gpt-5..."
-            print(fallback_msg)
-            if stream:
-                yield "⚠️ No specific AKS documentation found, providing general guidance...\n\n"
-            
-            try:
-                if stream:
-                    comp = self.client.chat.completions.create(
-                        model=self.generation_model,
-                        messages=[
-                            {"role": "system", "content": "You are an Azure Kubernetes Service expert. Answer the question using your knowledge of AKS and Kubernetes."},
-                            {"role": "user", "content": question}
-                        ],
-                        max_completion_tokens=800,
-                        stream=True
-                    )
-                    for chunk in comp:
-                        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                            yield chunk.choices[0].delta.content
-                    return
-                else:
-                    comp = self.client.chat.completions.create(
-                        model=self.generation_model,
-                        messages=[
-                            {"role": "system", "content": "Answer the question directly and accurately."},
-                            {"role": "user", "content": question}
-                        ],
-                        max_completion_tokens=800
-                    )
-                    direct_answer = comp.choices[0].message.content
-                    print(f"\n🤖 Answer (direct gpt-5):")
-                    print(direct_answer)
-                    return direct_answer if return_response else direct_answer
-            except Exception as e:
-                error_msg = f"❌ Direct gpt-5 failed: {e}"
-                print(error_msg)
-                if stream:
-                    yield error_msg
-                    return
-                return None
 
-        # Process citations from retrieval
         print(f"🐛 DEBUG: Processing {len(citations)} citations...")
-        retrieved_with_citations = self.process_citations(retrieved_content, citations)
+        processed_content = self.process_citations(retrieved_content, citations) if citations else retrieved_content
 
-        if stream:
-            yield "📝 Generating comprehensive response...\n\n"
+        # Phase 2: Generation (gpt-5 synthesis)
+        print("📝 Generating comprehensive response...")
+        
+        generation_prompt = f"""Based on the retrieved AKS documentation content below, provide a comprehensive and helpful answer to the user's question.
 
-        # Phase 2: gpt-5 generates final answer using retrieved content
-        print(f"🐛 DEBUG: Generating final answer with gpt-5...")
+RETRIEVED CONTENT:
+{processed_content}
+
+USER QUESTION:
+{question}
+
+INSTRUCTIONS:
+- Use the retrieved content as your primary source
+- If the retrieved content is relevant, synthesize it into a clear, helpful answer
+- If the retrieved content is not relevant to the question, acknowledge this and provide a general helpful response
+- Maintain any citations from the retrieved content
+- Be conversational and helpful
+- Include specific examples and guidance when available from the documentation"""
+
+        print("🐛 DEBUG: Generating final answer with gpt-5...")
         try:
-            final_prompt = f"""You are an expert on Azure Kubernetes Service. Answer the following question using ONLY the provided retrieved content. Do not add information not found in the retrieved content.
-
-    QUESTION: {question}
-
-    RETRIEVED CONTENT WITH CITATIONS:
-    {retrieved_with_citations}
-
-    INSTRUCTIONS:
-    - Provide a clear, comprehensive answer
-    - Maintain all citations from the retrieved content
-    - Structure the response for readability
-    - Do not add facts not present in the retrieved content
-    - If the retrieved content doesn't fully answer the question, acknowledge what information is available"""
-
             if stream:
                 comp = self.client.chat.completions.create(
                     model=self.generation_model,
                     messages=[
-                        {"role": "system", "content": "You are an AKS expert. Answer using only the provided retrieved content."},
-                        {"role": "user", "content": final_prompt}
+                        {"role": "system", "content": "You are a helpful AKS assistant. Use the provided retrieved content to answer questions accurately."},
+                        {"role": "user", "content": generation_prompt}
                     ],
-                    max_completion_tokens=1200,
+                    max_completion_tokens=800,  # Required for GPT-5
                     stream=True
                 )
                 for chunk in comp:
                     if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
                         yield chunk.choices[0].delta.content
-                print(f"🐛 DEBUG: ✅ Generated streaming answer with gpt-5")
+                print("🐛 DEBUG: ✅ Generated streaming answer with gpt-5")
                 return
             else:
                 comp = self.client.chat.completions.create(
                     model=self.generation_model,
                     messages=[
-                        {"role": "system", "content": "You are an AKS expert. Answer using only the provided retrieved content."},
-                        {"role": "user", "content": final_prompt}
+                        {"role": "system", "content": "You are a helpful AKS assistant. Use the provided retrieved content to answer questions accurately."},
+                        {"role": "user", "content": generation_prompt}
                     ],
-                    max_completion_tokens=1200
+                    max_completion_tokens=800  # Required for GPT-5
                 )
                 final_answer = comp.choices[0].message.content
-                print(f"🐛 DEBUG: ✅ Generated final answer with gpt-5")
+                print("🐛 DEBUG: ✅ Generated non-streaming answer with gpt-5")
                 
                 if return_response:
                     return final_answer
-
-                print(f"\n🤖 Answer (gpt-5 with retrieved context):")
+                print(f"\n🤖 Final Answer:")
                 print(final_answer)
                 return final_answer
                 
         except Exception as e:
-            error_msg = f"⚠️ gpt-5 generation failed, returning raw retrieved content: {e}"
+            error_msg = f"❌ GPT-5 generation failed: {e}"
             print(error_msg)
             if stream:
-                yield f"\n\n⚠️ Generation failed, here's the raw retrieved content:\n\n{retrieved_with_citations}"
+                yield error_msg
                 return
-            return retrieved_with_citations
+            return None
     def interactive_mode(self) -> None:
         """Interactive question-answer mode"""
         print("\n💬 Interactive mode - Type 'exit' to quit\n")
@@ -1891,8 +2076,8 @@ class AKSWikiAssistant:
         try:
             test_response = self.client.chat.completions.create(
                 model=self.deployment_name,
-                messages=[{"role": "user", "content": "test"}],
-                max_tokens=10
+                messages=[{"role": "user", "content": "test"}]
+                # max_tokens=10
             )
             print("✅ Connection to Azure OpenAI successful")
         except Exception as e:
@@ -2274,8 +2459,8 @@ class AKSWikiAssistant:
             try:
                 test_response = self.client.chat.completions.create(
                     model=self.deployment_name,
-                    messages=[{"role": "user", "content": "test"}],
-                    max_tokens=10
+                    messages=[{"role": "user", "content": "test"}]
+                    # max_tokens=10
                 )
                 print("✅ Connection successful")
             except Exception as e:
