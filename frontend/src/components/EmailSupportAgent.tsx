@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, Zap, Trophy, Brain, Mail, Loader2, CheckCircle, XCircle, Copy, Plus, ArrowLeft, Users, Search, User } from 'lucide-react';
+import { MessageSquare, Zap, Trophy, Brain, Mail, Loader2, CheckCircle, XCircle, Copy, Plus, ArrowLeft, Users, Search, User, Link as LinkIcon, ExternalLink } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 // @ts-ignore
@@ -111,6 +111,90 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   };
+
+  const renderResponseContent = (content: string) => {
+    // Check if content contains HTML tags (especially anchor tags)
+    const hasHtmlLinks = /<a\s+href="[^"]*"[^>]*>.*?<\/a>/i.test(content);
+    
+    if (hasHtmlLinks) {
+      // If we have HTML links, render as HTML with proper sanitization
+      return (
+        <div 
+          className="prose prose-blue max-w-none"
+          dangerouslySetInnerHTML={{ 
+            __html: content
+              // Ensure links open in new tabs
+              .replace(/<a\s+href="([^"]*)"(?![^>]*target=)/gi, '<a href="$1" target="_blank"')
+              // Add proper styling to links
+              .replace(/<a\s+href="([^"]*)"([^>]*)>/gi, 
+                '<a href="$1" $2 style="color: #2563eb; text-decoration: underline; font-weight: 500;">')
+              // Format the Sources section better
+              .replace(/\*\*Sources:\*\*/g, '<h4 style="font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem;">Sources:</h4>')
+              // Convert line breaks to HTML breaks
+              .replace(/\n/g, '<br/>')
+          }}
+        />
+      );
+    } else {
+      // If no HTML, render as Markdown
+      return (
+        <ReactMarkdown 
+          remarkPlugins={[remarkGfm]}
+          components={{
+            h1: ({children}) => <h1 className="text-2xl font-bold text-gray-900 mb-4">{children}</h1>,
+            h2: ({children}) => <h2 className="text-xl font-semibold text-gray-800 mb-3 mt-6">{children}</h2>,
+            h3: ({children}) => <h3 className="text-lg font-medium text-gray-700 mb-2 mt-4">{children}</h3>,
+            p: ({children}) => <p className="text-gray-700 mb-3 leading-relaxed">{children}</p>,
+            ul: ({children}) => <ul className="list-disc list-inside mb-3 space-y-1 text-gray-700">{children}</ul>,
+            ol: ({children}) => <ol className="list-decimal list-inside mb-3 space-y-1 text-gray-700">{children}</ol>,
+            li: ({children}) => <li className="text-gray-700">{children}</li>,
+            strong: ({children}) => <strong className="font-semibold text-gray-900">{children}</strong>,
+            a: ({href, children}) => (
+              <a 
+                href={href} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:text-blue-800 underline font-medium"
+              >
+                {children}
+              </a>
+            ),
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      );
+    }
+  };
+
+    
+  // Add these helper functions at the top of the component
+  const extractLinks = (content: string): Array<{text: string, url: string}> => {
+    const links: Array<{text: string, url: string}> = [];
+    const regex = /<a\s+href="([^"]*)"[^>]*>([^<]*)<\/a>/gi;
+    let match;
+    
+    while ((match = regex.exec(content)) !== null) {
+      const url = match[1];
+      let text = match[2];
+      
+      // Clean up the text - remove redundant info
+      text = text.replace(/\[.*?\]/, '').trim();
+      
+      // Shorten long titles
+      if (text.length > 30) {
+        text = text.substring(0, 30) + '...';
+      }
+      
+      // Skip duplicate links
+      if (!links.some(l => l.url === url)) {
+        links.push({ text: text || 'Source', url });
+      }
+    }
+    
+    return links;
+  };
+
 
   const copyAIResponse = async () => {
     try {
@@ -645,69 +729,34 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
                     </div>
                   )}
                   
-                  <div className="prose prose-blue max-w-none">
-                    <ReactMarkdown 
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        // Custom styling for markdown elements
-                        h1: ({children}) => <h1 className="text-2xl font-bold text-gray-900 mb-4">{children}</h1>,
-                        h2: ({children}) => <h2 className="text-xl font-semibold text-gray-800 mb-3 mt-6">{children}</h2>,
-                        h3: ({children}) => <h3 className="text-lg font-medium text-gray-700 mb-2 mt-4">{children}</h3>,
-                        p: ({children}) => <p className="text-gray-700 mb-3 leading-relaxed">{children}</p>,
-                        ul: ({children}) => <ul className="list-disc list-inside mb-3 space-y-1 text-gray-700">{children}</ul>,
-                        ol: ({children}) => <ol className="list-decimal list-inside mb-3 space-y-1 text-gray-700">{children}</ol>,
-                        li: ({children}) => <li className="text-gray-700">{children}</li>,
-                        blockquote: ({children}) => (
-                          <blockquote className="border-l-4 border-blue-200 pl-4 italic text-gray-600 mb-3">
-                            {children}
-                          </blockquote>
-                        ),
-                        code: ({className, children, ...props}) => {
-                          const match = /language-(\w+)/.exec(className || '');
-                          return match ? (
-                            <pre className="bg-gray-100 rounded-lg p-4 overflow-x-auto mb-3">
-                              <code className={`language-${match[1]} text-sm`} {...props}>
-                                {children}
-                              </code>
-                            </pre>
-                          ) : (
-                            <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono" {...props}>
-                              {children}
-                            </code>
-                          );
-                        },
-                        a: ({href, children}) => (
-                          <a 
-                            href={href} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:text-blue-800 underline"
-                          >
-                            {children}
-                          </a>
-                        ),
-                        table: ({children}) => (
-                          <div className="overflow-x-auto mb-3">
-                            <table className="min-w-full border border-gray-300 rounded-lg">
-                              {children}
-                            </table>
-                          </div>
-                        ),
-                        th: ({children}) => (
-                          <th className="border border-gray-300 px-4 py-2 bg-gray-50 font-semibold text-left">
-                            {children}
-                          </th>
-                        ),
-                        td: ({children}) => (
-                          <td className="border border-gray-300 px-4 py-2">
-                            {children}
-                          </td>
-                        ),
-                      }}
-                    >
-                      {streamingResponse || aiResponse}
-                    </ReactMarkdown>
+                  {/* Use the new render function */}
+                  <div className="text-gray-800">
+                    {renderResponseContent(streamingResponse || aiResponse)}
                   </div>
+                  
+                  {/* Add a special section for nicely formatted citations if they exist */}
+                  {aiResponse && aiResponse.includes('href=') && (
+                    <div className="mt-6 pt-4 border-t border-gray-200">
+                      <h4 className="text-sm font-semibold text-gray-600 mb-2 flex items-center">
+                        <LinkIcon className="w-4 h-4 mr-1" />
+                        Quick Links
+                      </h4>
+                      <div className="flex flex-wrap gap-2">
+                        {extractLinks(aiResponse).map((link, index) => (
+                          <a
+                            key={index}
+                            href={link.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-xs font-medium hover:bg-blue-100 transition-colors"
+                          >
+                            <ExternalLink className="w-3 h-3 mr-1" />
+                            {link.text}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

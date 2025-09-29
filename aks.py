@@ -552,46 +552,52 @@ class AKSWikiAssistant:
     #         print(f"❌ Run failed with status: {run.status}")
 
     def process_citations(self, message_content: str, annotations: List) -> str:
-        """Process citations and convert to clean hyperlinks"""
+        """Process citations and convert to clean HTML hyperlinks"""
         if not annotations:
             return message_content
         
-        unique_citations = {}
-        citations = []
+        citation_links = []
+        processed_files = set()
         
-        for index, annotation in enumerate(annotations):
+        for annotation in annotations:
+            # Remove citation markers from content
             pattern = re.escape(annotation.text)
-            message_content = re.sub(pattern, f"", message_content)  # Remove citation markers
+            message_content = re.sub(pattern, "", message_content)
             
             if hasattr(annotation, "file_citation"):
                 file_citation = annotation.file_citation
                 cited_file = self.client.files.retrieve(file_citation.file_id)
                 
-                # Extract filename
                 file_name = cited_file.filename
-                display_name = file_name.replace('.md', '').replace('_', ' ').replace('-', ' ').title()
                 
-                # Try to get public URL from mapping
+                # Skip if we've already processed this file
+                if file_name in processed_files:
+                    continue
+                processed_files.add(file_name)
+                
+                # Clean up filename for display
+                display_name = file_name.replace('.md', '').replace('_', ' ').replace('-', ' ')
+                # Capitalize appropriately
+                display_parts = display_name.split('/')
+                display_name = display_parts[-1].title() if display_parts else display_name.title()
+                
+                # Get public URL from mapping
                 public_url = self.get_public_url(file_name)
                 
-                # Only add unique citations
-                citation_key = file_name
-                if citation_key not in unique_citations:
-                    unique_citations[citation_key] = True
-                    
-                    # Create clean hyperlink
-                    if public_url:
-                        # Insert inline hyperlinks in the content
-                        link_text = f'<a href="{public_url}" target="_blank" style="color: #2563eb; text-decoration: underline;">{display_name}</a>'
-                        citations.append(link_text)
+                if public_url:
+                    # Create clean HTML hyperlink
+                    link_html = f'<a href="{public_url}" target="_blank" style="color: #2563eb; text-decoration: underline; font-weight: 500;">{display_name}</a>'
+                    citation_links.append(link_html)
         
-        # Add "Sources:" section with clean hyperlinks if we have citations
-        if citations:
-            unique_links = list(set(citations))  # Remove duplicates
-            message_content += f"\n\n**Sources:** {', '.join(unique_links)}"
+        # Add "Sources:" section with clean HTML hyperlinks
+        if citation_links:
+            # Format as a nice HTML list
+            citations_html = '\n\n<strong>Sources:</strong>\n'
+            for link in citation_links:
+                citations_html += f'• {link}\n'
+            message_content += citations_html
         
         return message_content
-    
     def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
             """Ask a question to the assistant"""
             print(f"🐛 DEBUG: ask_question called with: question='{question}', return_response={return_response}, stream={stream}")
