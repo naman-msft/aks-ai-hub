@@ -1,4 +1,4 @@
-# AKSAI Hub
+# AKS AI Hub
 
 A modern web application platform for multiple AI-powered assistants. Currently supports AKS customer support responses with optional human comparison and evaluation. Easily extensible for additional assistants like PRD writing, documentation, and more.
 
