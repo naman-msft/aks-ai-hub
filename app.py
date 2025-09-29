@@ -215,14 +215,14 @@ def get_assistants():
             "description": "Generate professional Product Requirement Documents",
             "icon": "📝",
             "status": "active"
-        },
-        {
-            "id": "prd-builder",
-            "name": "PRD Builder (Section by Section)",
-            "description": "Build PRDs section by section with review and editing",
-            "icon": "🏗️",
-            "status": "active"
         }
+        # {
+        #     "id": "prd-builder",
+        #     "name": "PRD Builder (Section by Section)",
+        #     "description": "Build PRDs section by section with review and editing",
+        #     "icon": "🏗️",
+        #     "status": "active"
+        # }
     ]
     return jsonify(assistants)
 

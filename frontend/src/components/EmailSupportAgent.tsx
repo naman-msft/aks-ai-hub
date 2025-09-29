@@ -1,5 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { MessageSquare, Zap, Trophy, Brain, Mail, Loader2, CheckCircle, XCircle, Copy, Plus, ArrowLeft } from 'lucide-react';
+// @ts-ignore
+import ReactMarkdown from 'react-markdown';
+// @ts-ignore
+import remarkGfm from 'remark-gfm';
 interface EmailSupportAgentProps {
   onBack: () => void;
 }
@@ -71,7 +75,43 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
   const aiResponseRef = useRef<HTMLDivElement>(null);
   const [isQuestionCollapsed, setIsQuestionCollapsed] = useState(false);
 
-// ...existing code...
+  // Add markdown to plain text conversion function
+  const convertMarkdownToPlainText = (markdown: string): string => {
+    return markdown
+      // Remove headers
+      .replace(/#{1,6}\s+/g, '')
+      // Remove emphasis
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      .replace(/__(.*?)__/g, '$1')
+      .replace(/_(.*?)_/g, '$1')
+      // Remove links but keep text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      // Remove code blocks
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      // Remove blockquotes
+      .replace(/>\s+/g, '')
+      // Clean up list markers
+      .replace(/^\s*[-*+]\s+/gm, '• ')
+      .replace(/^\s*\d+\.\s+/gm, '')
+      // Remove HTML tags
+      .replace(/<[^>]*>/g, '')
+      // Clean up extra whitespace
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  const copyAIResponse = async () => {
+    try {
+      const plainText = convertMarkdownToPlainText(aiResponse);
+      await navigator.clipboard.writeText(plainText);
+      setCopiedAIMain(true);
+      setTimeout(() => setCopiedAIMain(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
 
   const parseEmailAndGenerateResponse = async () => {
     if (!emailContent.trim()) {
@@ -443,7 +483,7 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
               </div>
 
               {/* AI Response with Streaming */}
-              <div ref={aiResponseRef} className="bg-white rounded-lg shadow-lg p-6">
+              {/* <div ref={aiResponseRef} className="bg-white rounded-lg shadow-lg p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-xl font-bold text-blue-600">
                     AI Generated Response
@@ -497,6 +537,111 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
                     {isStreaming ? streamingResponse : aiResponse}
                     {isStreaming && <span className="animate-pulse">▊</span>}
                   </p>
+                </div>
+              </div> */}
+
+              {/* AI Response Section */}
+              <div className="mb-8" ref={aiResponseRef}>
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Brain className="w-5 h-5 text-blue-600" />
+                      <h3 className="text-lg font-semibold text-gray-800">AI Generated Response</h3>
+                    </div>
+                    {aiResponse && (
+                      <button
+                        onClick={copyAIResponse}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                          copiedAIMain
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}
+                      >
+                        {copiedAIMain ? (
+                          <>
+                            <CheckCircle className="w-4 h-4" />
+                            Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-4 h-4" />
+                            Copy Response
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  
+                  {isStreaming && (
+                    <div className="flex items-center gap-3 text-blue-600 mb-4">
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span className="text-sm font-medium">Generating response...</span>
+                    </div>
+                  )}
+                  
+                  <div className="prose prose-blue max-w-none">
+                    <ReactMarkdown 
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        // Custom styling for markdown elements
+                        h1: ({children}) => <h1 className="text-2xl font-bold text-gray-900 mb-4">{children}</h1>,
+                        h2: ({children}) => <h2 className="text-xl font-semibold text-gray-800 mb-3 mt-6">{children}</h2>,
+                        h3: ({children}) => <h3 className="text-lg font-medium text-gray-700 mb-2 mt-4">{children}</h3>,
+                        p: ({children}) => <p className="text-gray-700 mb-3 leading-relaxed">{children}</p>,
+                        ul: ({children}) => <ul className="list-disc list-inside mb-3 space-y-1 text-gray-700">{children}</ul>,
+                        ol: ({children}) => <ol className="list-decimal list-inside mb-3 space-y-1 text-gray-700">{children}</ol>,
+                        li: ({children}) => <li className="text-gray-700">{children}</li>,
+                        blockquote: ({children}) => (
+                          <blockquote className="border-l-4 border-blue-200 pl-4 italic text-gray-600 mb-3">
+                            {children}
+                          </blockquote>
+                        ),
+                        code: ({className, children, ...props}) => {
+                          const match = /language-(\w+)/.exec(className || '');
+                          return match ? (
+                            <pre className="bg-gray-100 rounded-lg p-4 overflow-x-auto mb-3">
+                              <code className={`language-${match[1]} text-sm`} {...props}>
+                                {children}
+                              </code>
+                            </pre>
+                          ) : (
+                            <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono" {...props}>
+                              {children}
+                            </code>
+                          );
+                        },
+                        a: ({href, children}) => (
+                          <a 
+                            href={href} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 underline"
+                          >
+                            {children}
+                          </a>
+                        ),
+                        table: ({children}) => (
+                          <div className="overflow-x-auto mb-3">
+                            <table className="min-w-full border border-gray-300 rounded-lg">
+                              {children}
+                            </table>
+                          </div>
+                        ),
+                        th: ({children}) => (
+                          <th className="border border-gray-300 px-4 py-2 bg-gray-50 font-semibold text-left">
+                            {children}
+                          </th>
+                        ),
+                        td: ({children}) => (
+                          <td className="border border-gray-300 px-4 py-2">
+                            {children}
+                          </td>
+                        ),
+                      }}
+                    >
+                      {streamingResponse || aiResponse}
+                    </ReactMarkdown>
+                  </div>
                 </div>
               </div>
             </div>

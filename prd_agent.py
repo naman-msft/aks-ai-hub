@@ -18,9 +18,35 @@ from azure.ai.agents.models import MessageRole, BingGroundingTool
 from azure.identity import DefaultAzureCredential
 # Load environment variables from .env file
 load_dotenv()
-class PRDAgent:
 
-    
+class PRDAgent:
+    def __init__(self):
+        """Initialize PRD Agent with Azure OpenAI client and configuration"""
+        print("🐛 DEBUG: Starting PRDAgent initialization...")
+        print(f"API Key set: {'Yes' if os.getenv('AZURE_OPENAI_API_KEY') else 'No'}")
+        print(f"Endpoint: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
+        
+        # Initialize Azure OpenAI client
+        self.client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version="2025-04-01-preview",
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+        )
+        
+        # Set up configuration
+        self.prd_model = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-5")
+        self.bing_connection_id = os.getenv("AZURE_BING_CONNECTION_ID")
+        
+        # Initialize wiki assistant for internal searches
+        try:
+            self.wiki_assistant = AKSWikiAssistant()
+            print("🐛 DEBUG: ✅ Wiki assistant initialized")
+        except Exception as e:
+            print(f"⚠️  Could not initialize wiki assistant: {e}")
+            self.wiki_assistant = None
+        
+        print("🐛 DEBUG: ✅ PRDAgent initialization complete")
+
     def search_wiki(self, query: str) -> str:
         """Search internal wiki using the AKSWikiAssistant - using the working pattern from aks.py"""
         if not self.wiki_assistant:
