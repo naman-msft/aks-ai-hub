@@ -22,6 +22,40 @@ tester = None
 prd_agent = None
 # Replace the entire initialize_components function
 
+# def initialize_components():
+#     global assistant, grader, tester, prd_agent
+#     try:
+#         print("🚀 Initializing AKS Assistant...")
+#         assistant = AKSWikiAssistant()
+#         grader = AIResponseGrader()
+#         tester = AKSResponseTester(assistant, grader)
+#         prd_agent = PRDAgent()
+        
+#         # Load existing vector store and assistant IDs (like the old working version)
+#         if os.path.exists("vector_store_id.json"):
+#             with open("vector_store_id.json", 'r') as f:
+#                 assistant.vector_store_id = json.load(f)["vector_store_id"]
+#                 print(f"✅ Loaded vector store: {assistant.vector_store_id}")
+#         else:
+#             print("❌ No vector_store_id.json found")
+#             return False
+        
+#         if os.path.exists("assistant_id.json"):
+#             with open("assistant_id.json", 'r') as f:
+#                 assistant.assistant_id = json.load(f)["assistant_id"]
+#                 print(f"✅ Loaded assistant: {assistant.assistant_id}")
+#         else:
+#             print("❌ No assistant_id.json found")
+#             return False
+        
+#         print("✅ Components initialized successfully")
+#         return True
+#     except Exception as e:
+#         print(f"❌ Error initializing components: {e}")
+#         import traceback
+#         traceback.print_exc()
+#         return False
+
 def initialize_components():
     global assistant, grader, tester, prd_agent
     try:
@@ -29,9 +63,11 @@ def initialize_components():
         assistant = AKSWikiAssistant()
         grader = AIResponseGrader()
         tester = AKSResponseTester(assistant, grader)
-        prd_agent = PRDAgent()
         
-        # Load existing vector store and assistant IDs (like the old working version)
+        # Pass the same assistant instance to PRDAgent
+        prd_agent = PRDAgent(wiki_assistant=assistant)
+        
+        # Load existing vector store and assistant IDs
         if os.path.exists("vector_store_id.json"):
             with open("vector_store_id.json", 'r') as f:
                 assistant.vector_store_id = json.load(f)["vector_store_id"]
@@ -55,6 +91,7 @@ def initialize_components():
         import traceback
         traceback.print_exc()
         return False
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "AKSAI Hub API is running"})
@@ -328,6 +365,39 @@ def create_prd_stream():
     
     return Response(generate(), mimetype="text/event-stream")
 
+# @app.route('/api/prd/create', methods=['POST'])
+# def create_prd():
+#     try:
+#         # Initialize components if not already done
+#         if not prd_agent:
+#             if not initialize_components():
+#                 return jsonify({"error": "Failed to initialize components"}), 500
+#         data = request.json
+#         prompt = data.get('prompt', '')
+#         context = data.get('context', '')
+#         data_sources = data.get('data_sources', [])
+        
+#         if not prompt:
+#             return jsonify({"error": "Prompt is required"}), 400
+        
+#         # Fix: Change AZURE_OPENAI_KEY to AZURE_OPENAI_API_KEY to match .env file
+#         if not os.environ.get("AZURE_OPENAI_API_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+#             return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
+        
+#         result = prd_agent.create_prd(prompt, context, data_sources)
+        
+#         if result.get("success"):
+#             return jsonify({
+#                 "prd": result["prd"],
+#                 "message": "PRD created successfully"
+#             })
+#         else:
+#             return jsonify({"error": result.get("error", "Unknown error occurred")}), 500
+            
+#     except Exception as e:
+#         print(f"Error creating PRD: {str(e)}")
+#         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 @app.route('/api/prd/create', methods=['POST'])
 def create_prd():
     try:
@@ -343,9 +413,9 @@ def create_prd():
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
         
-        # Fix: Change AZURE_OPENAI_KEY to AZURE_OPENAI_API_KEY to match .env file
-        if not os.environ.get("AZURE_OPENAI_API_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
-            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
+        # Check if Azure OpenAI is configured - use AZURE_OPENAI_KEY like the working version
+        if not os.environ.get("AZURE_OPENAI_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
         
         result = prd_agent.create_prd(prompt, context, data_sources)
         
@@ -360,7 +430,6 @@ def create_prd():
     except Exception as e:
         print(f"Error creating PRD: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
-
 
 @app.route('/api/prd/continue-generation', methods=['POST'])
 def continue_prd_generation():

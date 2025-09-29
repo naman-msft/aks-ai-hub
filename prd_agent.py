@@ -21,7 +21,35 @@ import re
 load_dotenv()
 
 class PRDAgent:
-    def __init__(self):
+
+    # def __init__(self):
+    #     """Initialize PRD Agent with Azure OpenAI client and configuration"""
+    #     print("🐛 DEBUG: Starting PRDAgent initialization...")
+    #     print(f"API Key set: {'Yes' if os.getenv('AZURE_OPENAI_API_KEY') else 'No'}")
+    #     print(f"Endpoint: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
+        
+    #     # Initialize Azure OpenAI client
+    #     self.client = AzureOpenAI(
+    #         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    #         api_version="2025-04-01-preview",
+    #         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+    #     )
+        
+    #     # Set up configuration
+    #     self.prd_model = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-4.1")
+    #     self.bing_connection_id = os.getenv("AZURE_BING_CONNECTION_ID")
+        
+    #     # Initialize wiki assistant for internal searches
+    #     try:
+    #         self.wiki_assistant = AKSWikiAssistant()
+    #         print("🐛 DEBUG: ✅ Wiki assistant initialized")
+    #     except Exception as e:
+    #         print(f"⚠️  Could not initialize wiki assistant: {e}")
+    #         self.wiki_assistant = None
+        
+    #     print("🐛 DEBUG: ✅ PRDAgent initialization complete")
+
+    def __init__(self, wiki_assistant=None):
         """Initialize PRD Agent with Azure OpenAI client and configuration"""
         print("🐛 DEBUG: Starting PRDAgent initialization...")
         print(f"API Key set: {'Yes' if os.getenv('AZURE_OPENAI_API_KEY') else 'No'}")
@@ -35,16 +63,20 @@ class PRDAgent:
         )
         
         # Set up configuration
-        self.prd_model = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-5")
+        self.prd_model = os.getenv("AZURE_OPENAI_MODEL_PRD", "gpt-4.1")
         self.bing_connection_id = os.getenv("AZURE_BING_CONNECTION_ID")
         
-        # Initialize wiki assistant for internal searches
-        try:
-            self.wiki_assistant = AKSWikiAssistant()
-            print("🐛 DEBUG: ✅ Wiki assistant initialized")
-        except Exception as e:
-            print(f"⚠️  Could not initialize wiki assistant: {e}")
-            self.wiki_assistant = None
+        # Use passed wiki assistant or create new one
+        if wiki_assistant:
+            self.wiki_assistant = wiki_assistant
+            print("🐛 DEBUG: ✅ Using shared wiki assistant")
+        else:
+            try:
+                self.wiki_assistant = AKSWikiAssistant()
+                print("🐛 DEBUG: ✅ Created new wiki assistant")
+            except Exception as e:
+                print(f"⚠️  Could not initialize wiki assistant: {e}")
+                self.wiki_assistant = None
         
         print("🐛 DEBUG: ✅ PRDAgent initialization complete")
 
@@ -131,6 +163,7 @@ class PRDAgent:
                 })
         
         return comments
+
     
     def search_wiki(self, query: str) -> str:
         """Search internal wiki using the AKSWikiAssistant - using the working pattern from aks.py"""
@@ -312,6 +345,292 @@ class PRDAgent:
             import traceback
             traceback.print_exc()
             return "", []
+    # def search_wiki(self, query: str) -> str:
+    #     """Search internal wiki using the shared AKSWikiAssistant - improved approach"""
+    #     if not self.wiki_assistant:
+    #         print("⚠️ No wiki assistant available")
+    #         return ""
+        
+    #     try:
+    #         print(f"🔍 Searching wiki for: {query[:100]}...")
+            
+    #         # Ensure the assistant has the required IDs loaded
+    #         if not hasattr(self.wiki_assistant, 'vector_store_id') or not self.wiki_assistant.vector_store_id:
+    #             print("🔧 Loading vector store ID...")
+    #             if os.path.exists("vector_store_id.json"):
+    #                 with open("vector_store_id.json", 'r') as f:
+    #                     self.wiki_assistant.vector_store_id = json.load(f)["vector_store_id"]
+    #                     print(f"✅ Loaded vector store: {self.wiki_assistant.vector_store_id}")
+    #             else:
+    #                 print("⚠️ No vector_store_id.json found")
+    #                 return ""
+                        
+    #         if not hasattr(self.wiki_assistant, 'assistant_id') or not self.wiki_assistant.assistant_id:
+    #             print("🔧 Loading assistant ID...")
+    #             if os.path.exists("assistant_id.json"):
+    #                 with open("assistant_id.json", 'r') as f:
+    #                     self.wiki_assistant.assistant_id = json.load(f)["assistant_id"]
+    #                     print(f"✅ Loaded assistant: {self.wiki_assistant.assistant_id}")
+    #             else:
+    #                 print("⚠️ No assistant_id.json found")
+    #                 return ""
+            
+    #         # Method 1: Try the ask_question method with timeout handling
+    #         try:
+    #             search_query = f"Search for information about: {query[:200]}. Provide a brief summary of relevant information for PRD documentation."
+                
+    #             print(f"🔍 Calling wiki assistant ask_question...")
+    #             result = self.wiki_assistant.ask_question(search_query, return_response=True, stream=False)
+                
+    #             if result:
+    #                 final_content = ""
+                    
+    #                 # Handle generator with timeout
+    #                 if hasattr(result, '__iter__') and not isinstance(result, str):
+    #                     print("🔄 Processing generator response with timeout...")
+    #                     import time
+    #                     start_time = time.time()
+    #                     timeout_seconds = 15  # 15 second timeout for generator consumption
+                        
+    #                     try:
+    #                         for chunk in result:
+    #                             # Check timeout
+    #                             if time.time() - start_time > timeout_seconds:
+    #                                 print("⚠️ Generator consumption timed out")
+    #                                 break
+                                    
+    #                             if isinstance(chunk, str):
+    #                                 final_content += chunk
+    #                             elif hasattr(chunk, 'content'):
+    #                                 final_content += str(chunk.content)
+    #                             elif hasattr(chunk, 'delta') and hasattr(chunk.delta, 'content'):
+    #                                 final_content += str(chunk.delta.content)
+                                    
+    #                             # Break if we have enough content
+    #                             if len(final_content) > 800:
+    #                                 break
+                                    
+    #                         print(f"✅ Generator consumed, total length: {len(final_content)}")
+    #                     except Exception as gen_error:
+    #                         print(f"⚠️ Error consuming generator: {gen_error}")
+    #                         # Don't fallback to str(result) here, try Method 2 instead
+    #                         raise gen_error
+                            
+    #                 elif isinstance(result, str):
+    #                     print("✅ Got string response directly")
+    #                     final_content = result
+    #                 else:
+    #                     print(f"⚠️ Unexpected result type: {type(result)}")
+    #                     final_content = str(result)
+                    
+    #                 # Clean up and return if we got meaningful content
+    #                 if final_content and len(final_content.strip()) > 20:
+    #                     import re
+    #                     cleaned_result = re.sub(r'【\d+:\d+†[^】]*】', '', final_content)
+    #                     cleaned_result = re.sub(r'<[^>]+>', '', cleaned_result)
+    #                     cleaned_result = cleaned_result.strip()
+                        
+    #                     if len(cleaned_result) > 1000:
+    #                         cleaned_result = cleaned_result[:1000] + "..."
+                        
+    #                     print(f"✅ Wiki search completed, final length: {len(cleaned_result)}")
+    #                     return cleaned_result
+                        
+    #         except Exception as method1_error:
+    #             print(f"⚠️ Method 1 failed: {method1_error}")
+    #             # Continue to Method 2
+            
+    #         # Method 2: Direct API call as fallback
+    #         try:
+    #             print("🔄 Trying direct API call as fallback...")
+                
+    #             # Create a simple one-time thread and run
+    #             thread = self.wiki_assistant.client.beta.threads.create(
+    #                 tool_resources={
+    #                     "file_search": {
+    #                         "vector_store_ids": [self.wiki_assistant.vector_store_id]
+    #                     }
+    #                 }
+    #             )
+                
+    #             # Add message
+    #             self.wiki_assistant.client.beta.threads.messages.create(
+    #                 thread_id=thread.id,
+    #                 role="user",
+    #                 content=f"Search AKS documentation for: {query[:150]}. Provide a brief summary (max 200 words)."
+    #             )
+                
+    #             # Run with shorter timeout
+    #             run = self.wiki_assistant.client.beta.threads.runs.create_and_poll(
+    #                 thread_id=thread.id,
+    #                 assistant_id=self.wiki_assistant.assistant_id,
+    #                 instructions="Search AKS documentation briefly. Be concise - max 200 words.",
+    #                 tools=[{"type": "file_search"}],
+    #                 timeout=12  # Shorter timeout
+    #             )
+                
+    #             if run.status == 'completed':
+    #                 messages = self.wiki_assistant.client.beta.threads.messages.list(thread_id=thread.id)
+                    
+    #                 for message in messages.data:
+    #                     if message.role == "assistant":
+    #                         for content in message.content:
+    #                             if hasattr(content, 'text') and hasattr(content.text, 'value'):
+    #                                 result = content.text.value
+    #                                 # Clean up
+    #                                 import re
+    #                                 result = re.sub(r'【\d+:\d+†[^】]*】', '', result)
+    #                                 result = result[:600] + "..." if len(result) > 600 else result
+    #                                 print(f"✅ Direct API call successful, length: {len(result)}")
+    #                                 return result.strip()
+                
+    #             print("⚠️ Direct API call failed or timed out")
+    #             return ""
+                
+    #         except Exception as method2_error:
+    #             print(f"⚠️ Method 2 failed: {method2_error}")
+    #             return ""
+            
+    #     except Exception as e:
+    #         print(f"Wiki search error: {e}")
+    #         return ""
+
+
+    # def search_with_bing(self, query: str) -> tuple[str, list]:
+    #     """Search for information using Bing with grounding."""
+        
+    #     # Check if Bing search is disabled
+    #     if os.getenv("DISABLE_BING_SEARCH", "false").lower() == "true":
+    #         print("DEBUG: Bing search disabled via DISABLE_BING_SEARCH environment variable")
+    #         return "", []
+        
+    #     if not hasattr(self, 'bing_connection_id') or not self.bing_connection_id:
+    #         print(f"DEBUG: Missing Bing connection")
+    #         return "", []
+        
+    #     try:
+    #         import time
+    #         from azure.ai.projects import AIProjectClient
+    #         from azure.identity import DefaultAzureCredential
+            
+    #         # Add timeout wrapper
+    #         start_time = time.time()
+    #         timeout_seconds = 20  # Reduced timeout
+            
+    #         print("DEBUG: Starting Bing search with timeout...")
+            
+    #         project_client = AIProjectClient(
+    #             endpoint=os.environ.get("PROJECT_ENDPOINT"),
+    #             credential=DefaultAzureCredential(),
+    #         )
+            
+    #         instructions = """You are an expert Azure Kubernetes Service (AKS) support assistant. 
+    # Search for relevant information and provide concise, actionable results."""
+
+    #         with project_client:
+    #             agents_client = project_client.agents
+    #             print("DEBUG: Got agents client")
+                
+    #             # Initialize Bing grounding tool
+    #             bing = BingGroundingTool(connection_id=self.bing_connection_id)
+    #             print("DEBUG: Created BingGroundingTool")
+                
+    #             # Check timeout early
+    #             elapsed = time.time() - start_time
+    #             if elapsed > timeout_seconds:
+    #                 print(f"DEBUG: Early timeout after {elapsed}s")
+    #                 return "", []
+                
+    #             # Use GPT-4.1 for faster search
+    #             search_model = "gpt-4.1"
+    #             print(f"DEBUG: Using model {search_model} for Bing search")
+                
+    #             # Create agent
+    #             print("DEBUG: Creating agent...")
+    #             agent = agents_client.create_agent(
+    #                 model=search_model,
+    #                 name="prd-search-assistant",
+    #                 instructions=instructions,
+    #                 tools=bing.definitions,
+    #             )
+    #             print(f"DEBUG: ✅ Created agent: {agent.id}")
+                
+    #             # Check timeout
+    #             elapsed = time.time() - start_time
+    #             if elapsed > timeout_seconds:
+    #                 print(f"DEBUG: Timeout after agent creation: {elapsed}s")
+    #                 try:
+    #                     agents_client.delete_agent(agent.id)
+    #                 except:
+    #                     pass
+    #                 return "", []
+                
+    #             # Create thread
+    #             thread = agents_client.threads.create()
+    #             print(f"DEBUG: ✅ Created thread: {thread.id}")
+                
+    #             # Shortened query to avoid complexity
+    #             short_query = query[:100] + "..." if len(query) > 100 else query
+    #             search_query = f"Search Azure AKS documentation for: {short_query}"
+                
+    #             # Create message
+    #             message = agents_client.messages.create(
+    #                 thread_id=thread.id,
+    #                 role=MessageRole.USER,
+    #                 content=[{"type": "text", "text": search_query}],
+    #             )
+    #             print(f"DEBUG: ✅ Created message")
+                
+    #             # Check timeout before run
+    #             elapsed = time.time() - start_time
+    #             if elapsed > timeout_seconds:
+    #                 print(f"DEBUG: Timeout before run: {elapsed}s")
+    #                 try:
+    #                     agents_client.delete_agent(agent.id)
+    #                 except:
+    #                     pass
+    #                 return "", []
+                
+    #             # Run agent
+    #             print("DEBUG: Running agent...")
+    #             run = agents_client.runs.create_and_process(
+    #                 thread_id=thread.id,
+    #                 assistant_id=agent.id,
+    #             )
+    #             print(f"DEBUG: ✅ Run completed with status: {run.status}")
+                
+    #             # Get messages
+    #             messages = agents_client.messages.list(thread_id=thread.id)
+                
+    #             # Clean up
+    #             try:
+    #                 agents_client.delete_agent(agent.id)
+    #                 print("DEBUG: ✅ Agent cleaned up")
+    #             except:
+    #                 pass
+                
+    #             # Process results
+    #             search_content = ""
+    #             citations = []
+                
+    #             if messages.data and len(messages.data) > 1:
+    #                 assistant_message = messages.data[0]
+    #                 for content_item in assistant_message.content:
+    #                     if hasattr(content_item, 'text') and hasattr(content_item.text, 'value'):
+    #                         search_content += content_item.text.value + "\n"
+                    
+    #                 print(f"DEBUG: ✅ Search completed, content length: {len(search_content)}")
+    #                 return search_content.strip(), citations
+    #             else:
+    #                 print("DEBUG: No search results found")
+    #                 return "", []
+                    
+    #     except Exception as e:
+    #         print(f"Bing search error: {e}")
+    #         print("INFO: Continuing without web search...")
+    #         return "", []
+    
+
 
     def _load_prd_template(self) -> Dict:
         """Load PRD template structure"""
@@ -496,7 +815,7 @@ class PRDAgent:
         
         # Generate the section
         response = self.client.chat.completions.create(
-            model=self.deployment_name,
+            model=self.prd_model,
             messages=[
                 {"role": "system", "content": "You are an expert Product Manager writing a PRD."},
                 {"role": "user", "content": prompt}
@@ -578,7 +897,7 @@ class PRDAgent:
                 
                 # Generate the section with citations
                 response = self.client.chat.completions.create(
-                    model=self.deployment_name,
+                    model=self.prd_model,
                     messages=[
                         {"role": "system", "content": """You are an expert Product Manager writing a PRD for Azure Kubernetes Service (AKS) features. 
                         Follow the template guidance exactly. 
@@ -685,7 +1004,7 @@ class PRDAgent:
                 section_prompt = section_prompt.replace("{context}", enhanced_context)
                 
                 response = self.client.chat.completions.create(
-                    model=self.deployment_name,
+                    model=self.prd_model,
                     messages=[
                         {"role": "system", "content": """You are an expert Product Manager writing a PRD for Azure Kubernetes Service (AKS) features. 
                         Follow the template guidance exactly. 
