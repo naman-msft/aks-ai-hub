@@ -458,6 +458,8 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
       setIsStreaming(false);
     }
   };  
+
+  // Replace the reviewPRD function with this more robust version:
   const reviewPRD = async () => {
     let prdContent = '';
     
@@ -503,7 +505,12 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
           for (const line of lines) {
             if (line.startsWith('data: ')) {
               try {
-                const data = JSON.parse(line.slice(6));
+                const jsonStr = line.slice(6).trim();
+                if (!jsonStr) continue; // Skip empty lines
+                
+                const data = JSON.parse(jsonStr);
+                console.log('🐛 DEBUG: Received streaming data:', data);
+                
                 if (data.content) {
                   fullContent += data.content;
                   setStreamingReviewContent(fullContent);
@@ -514,6 +521,7 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                 }
                 
                 if (data.status === 'complete') {
+                  console.log('🐛 DEBUG: Review completed, setting final result');
                   setIsStreamingReview(false);
                   setReviewResult({
                     summary: fullContent,
@@ -527,14 +535,15 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                   throw new Error(data.error);
                 }
               } catch (e) {
-                // Skip malformed JSON lines
-                console.warn('Failed to parse streaming data:', e);
+                // Skip malformed JSON lines but log them
+                console.warn('Failed to parse streaming data:', e, 'Line:', line);
               }
             }
           }
         }
         
         // Fallback if no 'complete' status was received
+        console.log('🐛 DEBUG: Stream ended without complete status, using fallback');
         setIsStreamingReview(false);
         setReviewResult({
           summary: fullContent,
@@ -543,6 +552,7 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
         });
       }
     } catch (err) {
+      console.error('❌ Review error:', err);
       setError(err instanceof Error ? err.message : 'Failed to review PRD');
       setIsStreamingReview(false);
     }
@@ -566,6 +576,142 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
       status: 'ready'
     };
     setDataSources([...dataSources, newSource]);
+  };
+
+  // Add this function to help debug the parsing
+  const debugParseContent = (content: string) => {
+    console.log('🐛 DEBUG: Raw content length:', content.length);
+    console.log('🐛 DEBUG: First 500 chars:', content.substring(0, 500));
+    console.log('🐛 DEBUG: Contains **Section:**?', content.includes('**Section:'));
+    console.log('🐛 DEBUG: Contains ##?', content.includes('##'));
+    console.log('🐛 DEBUG: **Section: matches:', content.match(/\*\*Section:\s*/gi));
+  };
+  // Enhanced comment parsing function
+  const parseReviewIntoComments = (content: string, originalPRD: string): Array<{section: string, comment: string, suggestion?: string, lineRef?: string, lineIndex?: number}> => {
+    debugParseContent(content); // Add this line
+    const comments: Array<{section: string, comment: string, suggestion?: string, lineRef?: string, lineIndex?: number}> = [];
+    const lines = originalPRD.split('\n');
+    
+    console.log('🐛 DEBUG: Parsing content:', content.substring(0, 500)); // Debug log
+    
+    // Try multiple parsing patterns
+    let sections: string[] = [];
+    
+    // Pattern 1: **Section: [Name]**
+    if (content.includes('**Section:')) {
+      sections = content.split(/\*\*Section:\s*/i).slice(1);
+      console.log('🐛 DEBUG: Found sections with **Section: pattern:', sections.length);
+    }
+    // Pattern 2: ## [Section Name]
+    else if (content.includes('##')) {
+      sections = content.split(/##\s+/).slice(1);
+      console.log('🐛 DEBUG: Found sections with ## pattern:', sections.length);
+    }
+    // Pattern 3: **[Section Name]**
+    else if (content.match(/\*\*[^*]+\*\*/g)) {
+      const matches = content.match(/\*\*([^*]+)\*\*/g) || [];
+      sections = matches.map(match => match.replace(/\*\*/g, ''));
+      console.log('🐛 DEBUG: Found sections with **text** pattern:', sections.length);
+    }
+    // Pattern 4: Split by numbers (1., 2., 3.)
+    else if (content.match(/\d+\.\s+/g)) {
+      sections = content.split(/\d+\.\s+/).slice(1);
+      console.log('🐛 DEBUG: Found sections with numbered pattern:', sections.length);
+    }
+    
+    if (sections.length === 0) {
+      console.log('🐛 DEBUG: No sections found, creating general comment');
+      // If no sections found, treat the whole content as a general comment
+      comments.push({
+        section: 'General Review',
+        comment: content.trim(),
+        lineRef: 'Overall Document'
+      });
+      return comments;
+    }
+    
+    sections.forEach((section, index) => {
+      console.log(`🐛 DEBUG: Processing section ${index}:`, section.substring(0, 100));
+      
+      const lines_section = section.split('\n');
+      let sectionTitle = '';
+      
+      // Extract section title from different formats
+      if (lines_section[0].includes('**')) {
+        sectionTitle = lines_section[0].replace(/\*\*/g, '').trim();
+      } else {
+        sectionTitle = lines_section[0].trim() || `Section ${index + 1}`;
+      }
+      
+      let comment = '';
+      let suggestion = '';
+      let currentPart = 'comment';
+      
+      for (let i = 1; i < lines_section.length; i++) {
+        const line = lines_section[i].trim();
+        
+        if (line.toLowerCase().includes('suggestion:') || line.toLowerCase().includes('recommendation:')) {
+          currentPart = 'suggestion';
+          suggestion += line.replace(/suggestion:/i, '').replace(/recommendation:/i, '').trim() + '\n';
+        } else if (line.toLowerCase().includes('comment:')) {
+          currentPart = 'comment';
+          comment += line.replace(/comment:/i, '').trim() + '\n';
+        } else if (line && !line.startsWith('**') && !line.match(/^\d+\./)) {
+          if (currentPart === 'comment') {
+            comment += line + '\n';
+          } else {
+            suggestion += line + '\n';
+          }
+        }
+      }
+      
+      // If no explicit comment/suggestion structure, use the whole section as comment
+      if (!comment.trim() && !suggestion.trim()) {
+        comment = lines_section.slice(1).join('\n').trim();
+      }
+      
+      // Find line reference in original document
+      const lineIndex = lines.findIndex(line => 
+        line.toLowerCase().includes(sectionTitle.toLowerCase()) ||
+        sectionTitle.toLowerCase().includes(line.toLowerCase().trim())
+      );
+      
+      if (comment.trim() || suggestion.trim()) {
+        comments.push({
+          section: sectionTitle,
+          comment: comment.trim() || 'Review feedback provided',
+          suggestion: suggestion.trim() || undefined,
+          lineRef: lineIndex >= 0 ? `Line ${lineIndex + 1}` : undefined,
+          lineIndex: lineIndex >= 0 ? lineIndex : undefined
+        });
+      }
+    });
+    
+    console.log('🐛 DEBUG: Final parsed comments:', comments.length);
+    return comments;
+  };
+
+  // Function to export comments to Word-like format
+  const exportCommentsToWord = (comments: Array<{section: string, comment: string, suggestion?: string, lineRef?: string}>) => {
+    const exportContent = `
+# PRD Review Comments
+Generated on: ${new Date().toLocaleDateString()}
+
+${comments.map((comment, index) => `
+## Comment ${index + 1}: ${comment.section}
+${comment.lineRef ? `**Location:** ${comment.lineRef}` : ''}
+
+**Comment:**
+${comment.comment}
+
+${comment.suggestion ? `**Suggestion:**
+${comment.suggestion}` : ''}
+
+---
+`).join('\n')}
+    `.trim();
+    
+    copyToClipboard(exportContent);
   };
 
   const calculateQuickScore = (content: string): number => {
@@ -1364,15 +1510,16 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
               </button>
             </div>
           )}
+
           {/* Review Results */}
           {step === 'review' && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-7xl mx-auto">
-              {/* Document Panel */}
+              {/* Document Panel with Line Numbers */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold text-gray-800 flex items-center">
                     <FileText className="w-5 h-5 mr-2" />
-                    Document
+                    Original Document
                   </h3>
                   <button
                     onClick={() => setStep('select')}
@@ -1383,12 +1530,21 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                   </button>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-4 max-h-[600px] overflow-y-auto border">
-                  <div className="prose prose-sm max-w-none text-gray-800 leading-relaxed">
-                    <ReactMarkdown 
-                      remarkPlugins={[remarkGfm]}
-                    >
-                      {reviewMode === 'text' ? prdText : prdFile ? 'File uploaded for review' : 'No content provided'}
-                    </ReactMarkdown>
+                  {/* Document with line numbers */}
+                  <div className="font-mono text-sm">
+                    {(reviewMode === 'text' ? prdText : prdFile ? 'File uploaded for review' : 'No content provided')
+                      .split('\n')
+                      .map((line, index) => (
+                        <div key={index} className="flex hover:bg-blue-50 group">
+                          <div className="w-12 text-gray-400 text-right pr-3 py-1 select-none border-r border-gray-200 group-hover:text-blue-600">
+                            {index + 1}
+                          </div>
+                          <div className="flex-1 px-3 py-1 text-gray-800 leading-relaxed whitespace-pre-wrap">
+                            {line || ' '}
+                          </div>
+                        </div>
+                      ))
+                    }
                   </div>
                 </div>
               </div>
@@ -1403,55 +1559,140 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                       <Loader2 className="w-4 h-4 ml-2 animate-spin text-blue-600" />
                     )}
                   </h3>
-                  {streamingReviewContent && (
+                  {(streamingReviewContent || reviewResult) && (
                     <button
-                      onClick={() => copyToClipboard(streamingReviewContent)}
+                      onClick={() => copyToClipboard(streamingReviewContent || reviewResult?.summary || '')}
                       className="flex items-center px-3 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 text-sm"
                     >
                       <Copy className="w-4 h-4 mr-1" />
-                      Copy
+                      Copy All Comments
                     </button>
                   )}
                 </div>
-                <div className="bg-blue-50 rounded-lg p-4 max-h-[600px] overflow-y-auto border border-blue-200">
+                
+                <div className="max-h-[600px] overflow-y-auto space-y-4">
                   {isStreamingReview && !streamingReviewContent && (
-                    <div className="flex items-center text-blue-600">
+                    <div className="flex items-center text-blue-600 p-4 bg-blue-50 rounded-lg">
                       <Loader2 className="w-4 w-4 mr-2 animate-spin" />
-                      <span className="text-sm">Starting review analysis...</span>
+                      <span className="text-sm">Analyzing document and generating comments...</span>
                     </div>
                   )}
+                  
+                  {/* Streaming Content Display */}
                   {streamingReviewContent && (
-                    <div className="prose prose-sm max-w-none text-gray-800 leading-relaxed">
-                      <ReactMarkdown 
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          h1: ({children}) => <h1 className="text-xl font-bold text-blue-800 mb-3">{children}</h1>,
-                          h2: ({children}) => <h2 className="text-lg font-semibold text-blue-700 mb-2 mt-4">{children}</h2>,
-                          h3: ({children}) => <h3 className="text-base font-medium text-blue-600 mb-2 mt-3">{children}</h3>,
-                          strong: ({children}) => <strong className="font-semibold text-gray-900">{children}</strong>,
-                          p: ({children}) => <p className="mb-3 text-gray-700 leading-relaxed">{children}</p>,
-                          ul: ({children}) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
-                          li: ({children}) => <li className="text-gray-700">{children}</li>
-                        }}
-                      >
-                        {streamingReviewContent}
-                      </ReactMarkdown>
+                    <div className="space-y-4">
+                      {parseReviewIntoComments(streamingReviewContent, reviewMode === 'text' ? prdText : 'File content').map((comment, index) => (
+                        <div key={index} className="border border-orange-200 bg-orange-50 rounded-lg p-4">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex items-center text-sm font-medium text-orange-800">
+                              <MessageSquare className="w-4 h-4 mr-1" />
+                              {comment.section || 'General Comment'}
+                            </div>
+                            {comment.lineRef && (
+                              <span className="text-xs bg-orange-200 text-orange-700 px-2 py-1 rounded">
+                                {comment.lineRef}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-sm text-gray-700 mb-2">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {comment.comment}
+                            </ReactMarkdown>
+                          </div>
+                          {comment.suggestion && (
+                            <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded">
+                              <div className="text-xs font-medium text-green-800 mb-1">💡 Suggestion:</div>
+                              <div className="text-sm text-green-700">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {comment.suggestion}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   )}
+
+                  {/* Final Review Result Display */}
+                  {!streamingReviewContent && reviewResult && (
+                    <div className="space-y-4">
+                      {/* Overall Summary */}
+                      {reviewResult.summary && (
+                        <div className="border border-blue-200 bg-blue-50 rounded-lg p-4">
+                          <div className="flex items-center text-sm font-medium text-blue-800 mb-2">
+                            <CheckCircle className="w-4 h-4 mr-1" />
+                            Overall Assessment
+                          </div>
+                          <div className="text-sm text-gray-700">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {reviewResult.summary}
+                            </ReactMarkdown>
+                          </div>
+                          {reviewResult.score && (
+                            <div className="mt-2 text-xs text-blue-600">
+                              Document Score: {reviewResult.score}/100
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Individual Comments */}
+                      {reviewResult.comments && reviewResult.comments.length > 0 && (
+                        reviewResult.comments.map((comment: {section: string, comment: string, suggestion?: string, lineRef?: string}, index: number) => (
+                          <div key={index} className="border border-orange-200 bg-orange-50 rounded-lg p-4">
+                            <div className="flex items-start justify-between mb-2">
+                              <div className="flex items-center text-sm font-medium text-orange-800">
+                                <MessageSquare className="w-4 h-4 mr-1" />
+                                {comment.section || 'General Comment'}
+                              </div>
+                              {comment.lineRef && (
+                                <span className="text-xs bg-orange-200 text-orange-700 px-2 py-1 rounded">
+                                  {comment.lineRef}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-sm text-gray-700 mb-2">
+                              {comment.comment}
+                            </div>
+                            {comment.suggestion && (
+                              <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded">
+                                <div className="text-xs font-medium text-green-800 mb-1">💡 Suggestion:</div>
+                                <div className="text-sm text-green-700">
+                                  {comment.suggestion}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
                   {!isStreamingReview && !streamingReviewContent && !reviewResult && (
-                    <p className="text-gray-500 text-center py-8">Review will appear here...</p>
+                    <div className="text-center py-12">
+                      <MessageSquare className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-500">Comments will appear here as the document is reviewed...</p>
+                    </div>
                   )}
                 </div>
                 
                 {/* Action Buttons */}
-                {streamingReviewContent && !isStreamingReview && (
-                  <div className="flex space-x-3 mt-4">
+                {(streamingReviewContent || reviewResult) && !isStreamingReview && (
+                  <div className="flex space-x-3 mt-6 pt-4 border-t border-gray-200">
                     <button
                       onClick={resetForm}
                       className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
                     >
                       <Plus className="w-4 h-4 mr-1" />
                       Review Another PRD
+                    </button>
+                    <button
+                      onClick={() => exportCommentsToWord(parseReviewIntoComments(streamingReviewContent || reviewResult?.summary || '', reviewMode === 'text' ? prdText : 'File content'))}
+                      className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                    >
+                      <Download className="w-4 h-4 mr-1" />
+                      Export Comments
                     </button>
                   </div>
                 )}

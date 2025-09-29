@@ -419,22 +419,30 @@ class PRDAgent:
                 "success": False,
                 "error": str(e)
             }
-    
+        
     def review_prd_stream(self, prd_text: str):
         """Stream PRD review with real-time feedback generation"""
         try:
             system_prompt = """You are an expert PRD reviewer for Azure Kubernetes Service (AKS).
-            
-    Review the provided PRD and provide detailed feedback. Structure your response as:
 
-    1. **Overall Summary** - Brief assessment
-    2. **Section-by-Section Comments** - For each section found, provide:
-    - **Section: [Name]** (Line X-Y)
-    - Comment: [Specific feedback]
-    - Suggestion: [Improvement recommendation]
-    3. **Final Recommendations**
+    Review the provided PRD and provide detailed feedback. Structure your response EXACTLY as follows:
 
-    Focus on: completeness, technical accuracy, clarity, AKS best practices."""
+    **Section: Executive Summary**
+    Comment: [Your specific feedback about this section]
+    Suggestion: [Your improvement recommendation]
+
+    **Section: Problem Statement** 
+    Comment: [Your specific feedback about this section]
+    Suggestion: [Your improvement recommendation]
+
+    **Section: Requirements**
+    Comment: [Your specific feedback about this section]
+    Suggestion: [Your improvement recommendation]
+
+    Continue this pattern for each section you identify in the PRD.
+
+    Focus on: completeness, technical accuracy, clarity, AKS best practices.
+    Always use the exact format "**Section: [Name]**" followed by "Comment:" and "Suggestion:" lines."""
 
             response = self.client.chat.completions.create(
                 model=self.prd_model,
@@ -447,16 +455,20 @@ class PRDAgent:
             
             content = ""
             for chunk in response:
-                if chunk.choices[0].delta.content:
-                    delta = chunk.choices[0].delta.content
-                    content += delta
-                    yield {"content": delta, "status": "streaming"}
+                try:
+                    if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                        delta = chunk.choices[0].delta.content
+                        content += delta
+                        yield {"content": delta, "status": "streaming"}
+                except (IndexError, AttributeError) as e:
+                    print(f"⚠️ Skipping malformed chunk: {e}")
+                    continue
             
             yield {"status": "complete", "full_content": content}
             
         except Exception as e:
-            yield {"error": str(e), "status": "error"}
-            
+            print(f"❌ Error in review_prd_stream: {e}")
+            yield {"error": str(e), "status": "error"} 
     def generate_prd_section(self, section_id: str, context: Dict, previous_sections: Dict = None) -> str:
         """Generate a single PRD section"""
         # Load sections configuration
