@@ -8,6 +8,7 @@ import json
 import traceback
 # Add this import
 from prd_agent import PRDAgent
+from blog_agent import BlogAgent
 
 app = Flask(__name__, static_folder='frontend/build', static_url_path='')
 CORS(app)
@@ -20,6 +21,7 @@ assistant = None
 grader = None
 tester = None
 prd_agent = None
+blog_agent = None 
 # Replace the entire initialize_components function
 
 # def initialize_components():
@@ -56,16 +58,19 @@ prd_agent = None
 #         traceback.print_exc()
 #         return False
 
+
+# Update the initialize_components function
 def initialize_components():
-    global assistant, grader, tester, prd_agent
+    global assistant, grader, tester, prd_agent, blog_agent
     try:
         print("🚀 Initializing AKS Assistant...")
         assistant = AKSWikiAssistant()
         grader = AIResponseGrader()
         tester = AKSResponseTester(assistant, grader)
         
-        # Pass the same assistant instance to PRDAgent
+        # Pass the same assistant instance to both agents
         prd_agent = PRDAgent(wiki_assistant=assistant)
+        blog_agent = BlogAgent(wiki_assistant=assistant)  # Add this line
         
         # Load existing vector store and assistant IDs
         if os.path.exists("vector_store_id.json"):
@@ -91,7 +96,7 @@ def initialize_components():
         import traceback
         traceback.print_exc()
         return False
-
+    
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "AKSAI Hub API is running"})
@@ -245,33 +250,121 @@ def evaluate_response():
         print(f"❌ Error evaluating response: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-       
+
 @app.route('/api/assistants', methods=['GET'])
 def get_assistants():
     assistants = [
         {
             "id": "aks-support",
-            "name": "AKS Support Assistant",
-            "description": "Expert help for Azure Kubernetes Service issues",
+            "name": "AKS Support Assistant", 
+            "description": "Help PMs draft responses to internal Microsoft customer emails sent to AKS team aliases",
             "icon": "🚀",
             "status": "active"
         },
         {
             "id": "prd-writer",
             "name": "PRD Writer",
-            "description": "Generate professional Product Requirement Documents",
+            "description": "Enable PMs to create and review Product Requirement Documents with AI assistance",
             "icon": "📝",
             "status": "active"
+        },
+        {
+            "id": "blog-writer",
+            "name": "Blog Writer", 
+            "description": "Help PMs and devs create and review blog posts for AKS Engineering, CNCF, Kubernetes, and Microsoft platforms",
+            "icon": "✍️",
+            "status": "active"
         }
-        # {
-        #     "id": "prd-builder",
-        #     "name": "PRD Builder (Section by Section)",
-        #     "description": "Build PRDs section by section with review and editing",
-        #     "icon": "🏗️",
-        #     "status": "active"
-        # }
     ]
     return jsonify(assistants)
+
+# Add new blog-related endpoints
+@app.route('/api/blog/types', methods=['GET'])
+def get_blog_types():
+    """Get available blog types"""
+    try:
+        if not blog_agent:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        
+        blog_types = blog_agent.get_blog_types()
+        return jsonify({"blog_types": blog_types})
+    except Exception as e:
+        print(f"❌ Error getting blog types: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/blog/create', methods=['POST'])
+def create_blog_post():
+    """Create a blog post"""
+    try:
+        if not blog_agent:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        
+        data = request.json
+        blog_type = data.get('blog_type', '')
+        raw_content = data.get('raw_content', '')
+        title = data.get('title', '')
+        target_audience = data.get('target_audience', '')
+        additional_context = data.get('additional_context', '')
+        
+        if not blog_type or not raw_content:
+            return jsonify({"error": "Blog type and raw content are required"}), 400
+        
+        result = blog_agent.create_blog_post(
+            blog_type=blog_type,
+            raw_content=raw_content,
+            title=title,
+            target_audience=target_audience,
+            additional_context=additional_context
+        )
+        
+        if result.get("success"):
+            return jsonify({
+                "blog_content": result["blog_content"],
+                "blog_type": result["blog_type"],
+                "metadata": result["metadata"],
+                "word_count": result["word_count"],
+                "research_used": result["research_used"],
+                "message": result["message"]
+            })
+        else:
+            return jsonify({"error": result.get("error", "Unknown error occurred")}), 500
+            
+    except Exception as e:
+        print(f"❌ Error creating blog post: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/blog/review', methods=['POST'])
+def review_blog_post():
+    """Review a blog post"""
+    try:
+        if not blog_agent:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        
+        data = request.json
+        blog_content = data.get('blog_content', '')
+        blog_type = data.get('blog_type', '')
+        
+        if not blog_content or not blog_type:
+            return jsonify({"error": "Blog content and type are required"}), 400
+        
+        result = blog_agent.review_blog_post(blog_content, blog_type)
+        
+        if result.get("success"):
+            return jsonify({
+                "review": result["review"],
+                "structured_feedback": result["structured_feedback"],
+                "blog_type": result["blog_type"],
+                "timestamp": result["timestamp"]
+            })
+        else:
+            return jsonify({"error": result.get("error", "Unknown error occurred")}), 500
+            
+    except Exception as e:
+        print(f"❌ Error reviewing blog post: {e}")
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 # Serve React App
 @app.route('/')
