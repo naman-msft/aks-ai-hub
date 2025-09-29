@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { MessageSquare, Zap, Trophy, Brain, Mail, Loader2, CheckCircle, XCircle, Copy, Plus, ArrowLeft } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { MessageSquare, Zap, Trophy, Brain, Mail, Loader2, CheckCircle, XCircle, Copy, Plus, ArrowLeft, Users, Search, User } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
 // @ts-ignore
@@ -74,6 +74,16 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const aiResponseRef = useRef<HTMLDivElement>(null);
   const [isQuestionCollapsed, setIsQuestionCollapsed] = useState(false);
+  const [assigneeRecommendations, setAssigneeRecommendations] = useState('');
+  const [isLoadingAssignees, setIsLoadingAssignees] = useState(false);
+  const [showAssignees, setShowAssignees] = useState(false);
+  const [streamingAssignees, setStreamingAssignees] = useState('');
+
+  useEffect(() => {
+    if (aiResponse && !isLoadingAssignees && !assigneeRecommendations) {
+      getAssigneeRecommendations();
+    }
+  }, [aiResponse]);
 
   // Add markdown to plain text conversion function
   const convertMarkdownToPlainText = (markdown: string): string => {
@@ -311,6 +321,62 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
 
   const getWinnerColor = (winner: string) => {
     return winner === 'AI' ? 'text-blue-600' : 'text-purple-600';
+  };
+
+  const getAssigneeRecommendations = async () => {
+    if (!question.trim()) return;
+
+    setIsLoadingAssignees(true);
+    setAssigneeRecommendations('');
+    setStreamingAssignees('');
+    setShowAssignees(true);
+
+    try {
+      const response = await fetch('/api/suggest-assignees', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, context }),
+      });
+
+      if (!response.ok) throw new Error('Failed to get assignee recommendations');
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullResponse = '';
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.content) {
+                  fullResponse += data.content;
+                  setStreamingAssignees(fullResponse);
+                }
+              } catch (e) {
+                // Skip malformed JSON
+              }
+            }
+          }
+        }
+        
+        // Set final result
+        setAssigneeRecommendations(fullResponse);
+        setStreamingAssignees('');
+      }
+    } catch (err) {
+      console.error('Failed to get assignees:', err);
+      setAssigneeRecommendations('Error loading assignee recommendations. Please try again.');
+    } finally {
+      setIsLoadingAssignees(false);
+    }
   };
 
   return (
@@ -644,6 +710,96 @@ const EmailSupportAgent: React.FC<EmailSupportAgentProps> = ({ onBack }) => {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+          {/* Assignee Recommendations Section */}
+          {step === 'ai-response' && aiResponse && (
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-800">
+                  <Users className="w-5 h-5 text-purple-600 inline mr-2" />
+                  Recommended Assignees
+                </h3>
+                <button
+                  onClick={getAssigneeRecommendations}
+                  disabled={isLoadingAssignees}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all bg-purple-100 text-purple-700 hover:bg-purple-200"
+                >
+                  {isLoadingAssignees ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Finding experts...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-4 h-4" />
+                      Find Domain Experts
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {showAssignees && (
+                <div className="mt-6 p-4 bg-blue-50 rounded-lg border-l-4 border-blue-400">
+                  <h4 className="font-semibold text-blue-800 mb-3 flex items-center">
+                    <Users className="h-5 w-5 mr-2" />
+                    Recommended Assignees
+                  </h4>
+                  {isLoadingAssignees ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center text-blue-600">
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Finding domain experts...
+                      </div>
+                      {streamingAssignees && (
+                        <div className="text-sm text-gray-700 whitespace-pre-wrap">
+                          {streamingAssignees}
+                        </div>
+                      )}
+                    </div>
+                  ) : (assigneeRecommendations || streamingAssignees) ? (
+                    <div className="space-y-3">
+                      {(assigneeRecommendations || streamingAssignees)
+                        .split('\n')
+                        .filter(line => line.trim() && line.includes('@'))
+                        .map((line, index) => {
+                          // Parse format: **Name** (alias@microsoft.com) - Expertise
+                          const nameMatch = line.match(/\*\*(.*?)\*\*/);
+                          const emailMatch = line.match(/\(([^)]+@microsoft\.com)\)/);
+                          const expertiseMatch = line.split(' - ')[1];
+                          
+                          const name = nameMatch?.[1] || 'Expert';
+                          const email = emailMatch?.[1] || '';
+                          const expertise = expertiseMatch || 'AKS Domain Expert';
+                          
+                          return (
+                            <div key={index} className="flex items-center justify-between p-3 bg-white rounded-lg shadow-sm">
+                              <div className="flex items-center space-x-3">
+                                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                                  <User className="h-5 w-5 text-blue-600" />
+                                </div>
+                                <div>
+                                  <div className="font-medium text-gray-900">{name}</div>
+                                  <div className="text-sm text-gray-500">{expertise}</div>
+                                </div>
+                              </div>
+                              {email && (
+                                <button
+                                  onClick={() => window.open(`mailto:${email}`, '_blank')}
+                                  className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+                                >
+                                  Contact
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="text-gray-500 text-sm">No specific assignee recommendations found.</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

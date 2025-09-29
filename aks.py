@@ -416,7 +416,7 @@ class AKSWikiAssistant:
                 print(f"   Preview: {preview}\n")
             except:
                 print(f"   Preview: Not available\n")
-
+                
     def create_or_load_assistant(self) -> str:
         """Create or load existing assistant"""
         print(f"\n🤖 Setting up AI assistant...")
@@ -427,18 +427,52 @@ class AKSWikiAssistant:
                 data = json.load(f)
                 self.assistant_id = data.get('assistant_id')
                 print(f"✅ Loaded existing assistant: {self.assistant_id}")
+                
+                # CRITICAL: Ensure existing assistant has vector store access
+                if self.vector_store_id:
+                    print("🔧 Updating existing assistant with vector store access...")
+                    try:
+                        self.client.beta.assistants.update(
+                            assistant_id=self.assistant_id,
+                            tool_resources={"file_search": {"vector_store_ids": [self.vector_store_id]}}
+                        )
+                        print("✅ Assistant updated with vector store access")
+                    except Exception as e:
+                        print(f"❌ Failed to update assistant with vector store: {e}")
+                        print("🔧 Will create new assistant...")
+                        # Remove the file and create new assistant
+                        os.remove(ASSISTANT_ID_FILE)
+                        return self.create_or_load_assistant()
+                
                 return self.assistant_id
         
         # Create new assistant
         print("🔧 Creating new assistant...")
+        if not self.vector_store_id:
+            print("❌ ERROR: No vector store available for assistant creation!")
+            return None
+            
         try:
             assistant = self.client.beta.assistants.create(
-                name="AKS Documentation Expert with Web Search",
-                instructions="""You are an expert in AKS (Azure Kubernetes Service) documentation and support. 
-                Use the provided documentation AND web search to answer technical questions accurately. 
-                ALWAYS include links to the original documentation you referenced in your answer.
-                When using web search, prioritize official Microsoft documentation and recent information.
-                Be concise but thorough. Format your responses with proper markdown.""",
+                name="AKS Support Email Assistant",
+                instructions="""You are an expert AKS Product Manager providing professional email responses to customer inquiries.
+
+    CRITICAL REQUIREMENTS:
+    - You MUST search through the uploaded AKS documentation files using the file_search tool
+    - Write responses as professional emails from an AKS Product Manager
+    - Base ALL answers on information found in the uploaded documentation
+    - Always cite specific documents you reference using proper file names
+    - Use a helpful, professional tone suitable for customer email communication
+    - If information is not in uploaded docs, clearly state "I don't have specific information about this in our documentation"
+
+    EMAIL FORMAT:
+    - Start with a professional greeting
+    - Provide clear, direct answers based on documentation
+    - Include relevant technical details and examples
+    - End with appropriate professional closing
+    - Use proper email formatting and tone throughout
+
+    Always search the documentation first before providing any answer.""",
                 model=self.deployment_name,
                 tools=[{"type": "file_search"}],
             )
@@ -460,7 +494,6 @@ class AKSWikiAssistant:
         except Exception as e:
             print(f"❌ Failed to create assistant: {e}")
             return None
-
     # def ask_question(self, question: str) -> None:
     #     """Ask a question to the assistant"""
     #     if not self.thread_id:
@@ -519,7 +552,7 @@ class AKSWikiAssistant:
     #         print(f"❌ Run failed with status: {run.status}")
 
     def process_citations(self, message_content: str, annotations: List) -> str:
-        """Process citations and add proper links using wiki URL mapping"""
+        """Process citations and convert to clean hyperlinks"""
         if not annotations:
             return message_content
         
@@ -528,7 +561,7 @@ class AKSWikiAssistant:
         
         for index, annotation in enumerate(annotations):
             pattern = re.escape(annotation.text)
-            message_content = re.sub(pattern, f" [{index}]", message_content)
+            message_content = re.sub(pattern, f"", message_content)  # Remove citation markers
             
             if hasattr(annotation, "file_citation"):
                 file_citation = annotation.file_citation
@@ -536,233 +569,220 @@ class AKSWikiAssistant:
                 
                 # Extract filename
                 file_name = cited_file.filename
-                display_name = file_name.replace('.md', '')
+                display_name = file_name.replace('.md', '').replace('_', ' ').replace('-', ' ').title()
                 
                 # Try to get public URL from mapping
                 public_url = self.get_public_url(file_name)
                 
-                # Get quote preview
-                quote = getattr(file_citation, "quote", "Document")
-                preview_text = quote[:200] + "..." if len(quote) > 200 else quote
-                
                 # Only add unique citations
-                citation_key = file_name  # Use filename as key for uniqueness
+                citation_key = file_name
                 if citation_key not in unique_citations:
-                    unique_citations[citation_key] = len(citations)
+                    unique_citations[citation_key] = True
                     
-                    # Create citation with HTML links
+                    # Create clean hyperlink
                     if public_url:
-                        citation_text = f'[{len(citations)}] <a href="{public_url}" target="_blank">{display_name}</a>'
-                    else:
-                        # Fallback to just the display name without URL
-                        citation_text = f"[{len(citations)}] {display_name}"
-                    
-                    if quote != "Document" and quote:
-                        citation_text += f"<br><blockquote>{preview_text}</blockquote>"
-                    citations.append(citation_text)
-                else:
-                    # Replace with existing citation index
-                    existing_index = unique_citations[citation_key]
-                    message_content = message_content.replace(f"[{index}]", f"[{existing_index}]")
+                        # Insert inline hyperlinks in the content
+                        link_text = f'<a href="{public_url}" target="_blank" style="color: #2563eb; text-decoration: underline;">{display_name}</a>'
+                        citations.append(link_text)
         
-        # Add citations at the end with HTML formatting
+        # Add "Sources:" section with clean hyperlinks if we have citations
         if citations:
-            message_content += "<br><br><strong>Sources:</strong><br>" + "<br><br>".join(citations)
+            unique_links = list(set(citations))  # Remove duplicates
+            message_content += f"\n\n**Sources:** {', '.join(unique_links)}"
         
         return message_content
-
+    
     def ask_question(self, question: str, return_response: bool = False, stream: bool = False):
-        """Ask a question to the assistant"""
-        print(f"🐛 DEBUG: ask_question called with: question='{question}', return_response={return_response}, stream={stream}")
-        
-        if not self.thread_id:
-            print("🐛 DEBUG: Creating new thread...")
-            thread = self.client.beta.threads.create(
-                tool_resources={
-                    "file_search": {
-                        "vector_store_ids": [self.vector_store_id]
+            """Ask a question to the assistant"""
+            print(f"🐛 DEBUG: ask_question called with: question='{question}', return_response={return_response}, stream={stream}")
+            
+            if not self.thread_id:
+                print("🐛 DEBUG: Creating new thread...")
+                thread = self.client.beta.threads.create(
+                    tool_resources={
+                        "file_search": {
+                            "vector_store_ids": [self.vector_store_id]
+                        }
                     }
-                }
-            )
-            self.thread_id = thread.id
-            print(f"🐛 DEBUG: ✅ Thread created: {self.thread_id}")
-        else:
-            print(f"🐛 DEBUG: Using existing thread: {self.thread_id}")
-        
-        # Add message to thread
-        print("🐛 DEBUG: Adding message to thread...")
-        self.client.beta.threads.messages.create(
-            thread_id=self.thread_id,
-            role="user",
-            content=question,  
-        )
-        print("🐛 DEBUG: ✅ Message added to thread")
-        
-        # Prepare tools list - use bing.definitions like the working wiki_assistant.py
-        # Prepare tools list - extract the JSON-serializable format
-        tools = [{"type": "file_search"}]
-        # if self.bing_tool:
-        #     try:
-        #         # The BingGroundingTool.definitions returns a list with the tool definition
-        #         # Extract the actual dict from the definitions
-        #         if hasattr(self.bing_tool, 'definitions') and self.bing_tool.definitions:
-        #             for tool_def in self.bing_tool.definitions:
-        #                 # Convert to dict if it's not already
-        #                 if hasattr(tool_def, '__dict__'):
-        #                     # It's an object, need to convert to dict
-        #                     tool_dict = {
-        #                         "type": "bing_grounding",
-        #                         "bing_grounding": {
-        #                             "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
-        #                         }
-        #                     }
-        #                     tools.append(tool_dict)
-        #                 else:
-        #                     # It's already a dict
-        #                     tools.append(tool_def)
-        #             print(f"🐛 DEBUG: Added Bing grounding tool")
-        #         else:
-        #             # Fallback to manual configuration
-        #             tools.append({
-        #                 "type": "bing_grounding",
-        #                 "bing_grounding": {
-        #                     "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
-        #                 }
-        #             })
-        #             print("🐛 DEBUG: Added Bing grounding tool (fallback)")
-        #     except Exception as e:
-        #         print(f"🐛 DEBUG: Error adding Bing tools: {e}")
-        #         print("🐛 DEBUG: Continuing without Bing grounding")
-        # else:
-        #     print("🐛 DEBUG: No Bing tool available")
-        print(f"🐛 DEBUG: Final tools array: {tools}")
-
-        # Run the assistant with explicit file search
-        print("🔄 Processing your question...")
-        print("🐛 DEBUG: About to create assistant run...")
-        
-        if stream:
-            print("🐛 DEBUG: Creating streaming run...")
-            try:
-                run = self.client.beta.threads.runs.create(
-                    thread_id=self.thread_id,
-                    assistant_id=self.assistant_id,
-                    instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
-
-        SEARCH PRIORITY:
-        1. Search the uploaded documentation files for official AKS guidance
-        2. Use multiple search queries if needed to find comprehensive information
-        3. Look for related topics and cross-references
-
-        CITATION REQUIREMENTS:
-        - ALWAYS cite specific documents you reference using the file_search tool
-        - Include proper file names and relevant sections
-        - Provide clear links to source documentation
-        - If multiple sources cover the topic, synthesize the information
-
-        FORMAT:
-        - Clear answer with step-by-step guidance
-        - Include relevant examples and best practices from the documentation""",
-                    tools=tools,
-                    stream=True
                 )
-                print("🐛 DEBUG: ✅ Streaming run created successfully")
-            except Exception as e:
-                print(f"🐛 DEBUG: ❌ Error creating streaming run: {type(e).__name__}: {str(e)}")
-                raise
+                self.thread_id = thread.id
+                print(f"🐛 DEBUG: ✅ Thread created: {self.thread_id}")
+            else:
+                print(f"🐛 DEBUG: Using existing thread: {self.thread_id}")
             
-            response_content = ""
-            print("🐛 DEBUG: Starting to process stream events...")
-            
-            try:
-                for event in run:
-                    print(f"🐛 DEBUG: Stream event: {event.event}")
-                    if event.event == 'thread.message.delta':
-                        for content in event.data.delta.content:
-                            if hasattr(content, 'text') and hasattr(content.text, 'value'):
-                                chunk = content.text.value
-                                response_content += chunk
-                                yield chunk
-                    elif event.event == 'thread.run.completed':
-                        print("🐛 DEBUG: Run completed, processing citations...")
-                        # Process final content with citations
-                        messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
-                        for message in messages:
-                            if message.role == "assistant":
-                                for content in message.content:
-                                    if hasattr(content, 'text'):
-                                        text_content = content.text.value
-                                        annotations = getattr(content.text, 'annotations', [])
-                                        final_content = self.process_citations(text_content, annotations)
-                                        
-                                        # Send any remaining content
-                                        if len(final_content) > len(response_content):
-                                            remaining = final_content[len(response_content):]
-                                            yield remaining
-                                        print("🐛 DEBUG: ✅ Streaming response completed")
-                                        return
-            except Exception as e:
-                print(f"🐛 DEBUG: ❌ Error processing stream: {type(e).__name__}: {str(e)}")
-                raise
-        else:
-            print("🐛 DEBUG: Creating non-streaming run...")
-            try:
-                run = self.client.beta.threads.runs.create_and_poll(
-                    thread_id=self.thread_id,
-                    assistant_id=self.assistant_id,
-                    instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
-
-        SEARCH PRIORITY:
-        1. Search the uploaded documentation files for official AKS guidance
-        2. Use multiple search queries if needed to find comprehensive information
-        3. Look for related topics and cross-references
-
-        CITATION REQUIREMENTS:
-        - ALWAYS cite specific documents you reference using the file_search tool
-        - Include proper file names and relevant sections
-        - Provide clear links to source documentation
-        - If multiple sources cover the topic, synthesize the information
-
-        FORMAT:
-        - Clear answer with step-by-step guidance
-        - Use HTML links for citations: <a href="URL" target="_blank">Link Text</a>
-        - Use basic HTML formatting: <strong>bold</strong>, <em>italic</em>, <br> for line breaks
-        - Include relevant examples and best practices from the documentation
-        - Do not use markdown - use HTML formatting only""",
-                    tools=tools,
-                )
-                print(f"🐛 DEBUG: ✅ Non-streaming run created with status: {run.status}")
-            except Exception as e:
-                print(f"🐛 DEBUG: ❌ Error creating non-streaming run: {type(e).__name__}: {str(e)}")
-                raise
-        
-        if run.status == 'completed':
-            print("🐛 DEBUG: Run completed successfully, processing messages...")
-            # Get messages
-            messages = self.client.beta.threads.messages.list(
-                thread_id=self.thread_id
+            # Add message to thread
+            print("🐛 DEBUG: Adding message to thread...")
+            self.client.beta.threads.messages.create(
+                thread_id=self.thread_id,
+                role="user",
+                content=question,  
             )
-            for message in messages:
-                if message.role == "assistant":
-                    for content in message.content:
-                        if hasattr(content, 'text'):
-                            text_content = content.text.value
-                            annotations = getattr(content.text, 'annotations', [])
-                            
-                            # Process citations
-                            final_content = self.process_citations(text_content, annotations)
-                            
-                            if return_response:
-                                print("🐛 DEBUG: ✅ Returning response")
-                                return final_content
-                            else:
-                                print(f"\n🤖 Assistant:\n{final_content}\n")
-                                print("🐛 DEBUG: ✅ Response printed")
-                                return final_content
-        else:
-            print(f"❌ Run failed with status: {run.status}")
-            print(f"🐛 DEBUG: ❌ Run failed with status: {run.status}")
+            print("🐛 DEBUG: ✅ Message added to thread")
+            
+            # Prepare tools list - use bing.definitions like the working wiki_assistant.py
+            # Prepare tools list - extract the JSON-serializable format
+            tools = [{"type": "file_search"}]
+            # if self.bing_tool:
+            #     try:
+            #         # The BingGroundingTool.definitions returns a list with the tool definition
+            #         # Extract the actual dict from the definitions
+            #         if hasattr(self.bing_tool, 'definitions') and self.bing_tool.definitions:
+            #             for tool_def in self.bing_tool.definitions:
+            #                 # Convert to dict if it's not already
+            #                 if hasattr(tool_def, '__dict__'):
+            #                     # It's an object, need to convert to dict
+            #                     tool_dict = {
+            #                         "type": "bing_grounding",
+            #                         "bing_grounding": {
+            #                             "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
+            #                         }
+            #                     }
+            #                     tools.append(tool_dict)
+            #                 else:
+            #                     # It's already a dict
+            #                     tools.append(tool_def)
+            #             print(f"🐛 DEBUG: Added Bing grounding tool")
+            #         else:
+            #             # Fallback to manual configuration
+            #             tools.append({
+            #                 "type": "bing_grounding",
+            #                 "bing_grounding": {
+            #                     "connection_id": os.getenv("AZURE_BING_CONNECTION_ID")
+            #                 }
+            #             })
+            #             print("🐛 DEBUG: Added Bing grounding tool (fallback)")
+            #     except Exception as e:
+            #         print(f"🐛 DEBUG: Error adding Bing tools: {e}")
+            #         print("🐛 DEBUG: Continuing without Bing grounding")
+            # else:
+            #     print("🐛 DEBUG: No Bing tool available")
+            print(f"🐛 DEBUG: Final tools array: {tools}")
 
+            # Run the assistant with explicit file search
+            print("🔄 Processing your question...")
+            print("🐛 DEBUG: About to create assistant run...")
+            
+            if stream:
+                print("🐛 DEBUG: Creating streaming run...")
+                try:
+                    run = self.client.beta.threads.runs.create(
+                        thread_id=self.thread_id,
+                        assistant_id=self.assistant_id,
+                        instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+
+            SEARCH PRIORITY:
+            1. Search the uploaded documentation files for official AKS guidance
+            2. Use multiple search queries if needed to find comprehensive information
+            3. Look for related topics and cross-references
+
+            CITATION REQUIREMENTS:
+            - ALWAYS cite specific documents you reference using the file_search tool
+            - Include proper file names and relevant sections
+            - Provide clear links to source documentation
+            - If multiple sources cover the topic, synthesize the information
+
+            FORMAT:
+            - Clear answer with step-by-step guidance
+            - Include relevant examples and best practices from the documentation""",
+                        tools=tools,
+                        stream=True
+                    )
+                    print("🐛 DEBUG: ✅ Streaming run created successfully")
+                except Exception as e:
+                    print(f"🐛 DEBUG: ❌ Error creating streaming run: {type(e).__name__}: {str(e)}")
+                    raise
+                
+                response_content = ""
+                print("🐛 DEBUG: Starting to process stream events...")
+                
+                try:
+                    for event in run:
+                        print(f"🐛 DEBUG: Stream event: {event.event}")
+                        if event.event == 'thread.message.delta':
+                            for content in event.data.delta.content:
+                                if hasattr(content, 'text') and hasattr(content.text, 'value'):
+                                    chunk = content.text.value
+                                    response_content += chunk
+                                    yield chunk
+                        elif event.event == 'thread.run.completed':
+                            print("🐛 DEBUG: Run completed, processing citations...")
+                            # Process final content with citations
+                            messages = self.client.beta.threads.messages.list(thread_id=self.thread_id)
+                            for message in messages:
+                                if message.role == "assistant":
+                                    for content in message.content:
+                                        if hasattr(content, 'text'):
+                                            text_content = content.text.value
+                                            annotations = getattr(content.text, 'annotations', [])
+                                            final_content = self.process_citations(text_content, annotations)
+                                            
+                                            # Send any remaining content
+                                            if len(final_content) > len(response_content):
+                                                remaining = final_content[len(response_content):]
+                                                yield remaining
+                                            print("🐛 DEBUG: ✅ Streaming response completed")
+                                            return
+                except Exception as e:
+                    print(f"🐛 DEBUG: ❌ Error processing stream: {type(e).__name__}: {str(e)}")
+                    raise
+            else:
+                print("🐛 DEBUG: Creating non-streaming run...")
+                try:
+                    run = self.client.beta.threads.runs.create_and_poll(
+                        thread_id=self.thread_id,
+                        assistant_id=self.assistant_id,
+                        instructions="""You MUST search through the uploaded AKS documentation files to answer this question comprehensively. 
+
+            SEARCH PRIORITY:
+            1. Search the uploaded documentation files for official AKS guidance
+            2. Use multiple search queries if needed to find comprehensive information
+            3. Look for related topics and cross-references
+
+            CITATION REQUIREMENTS:
+            - ALWAYS cite specific documents you reference using the file_search tool
+            - Include proper file names and relevant sections
+            - Provide clear links to source documentation
+            - If multiple sources cover the topic, synthesize the information
+
+            FORMAT:
+            - Clear answer with step-by-step guidance
+            - Use HTML links for citations: <a href="URL" target="_blank">Link Text</a>
+            - Use basic HTML formatting: <strong>bold</strong>, <em>italic</em>, <br> for line breaks
+            - Include relevant examples and best practices from the documentation
+            - Do not use markdown - use HTML formatting only""",
+                        tools=tools,
+                    )
+                    print(f"🐛 DEBUG: ✅ Non-streaming run created with status: {run.status}")
+                except Exception as e:
+                    print(f"🐛 DEBUG: ❌ Error creating non-streaming run: {type(e).__name__}: {str(e)}")
+                    raise
+            
+            if run.status == 'completed':
+                print("🐛 DEBUG: Run completed successfully, processing messages...")
+                # Get messages
+                messages = self.client.beta.threads.messages.list(
+                    thread_id=self.thread_id
+                )
+                for message in messages:
+                    if message.role == "assistant":
+                        for content in message.content:
+                            if hasattr(content, 'text'):
+                                text_content = content.text.value
+                                annotations = getattr(content.text, 'annotations', [])
+                                
+                                # Process citations
+                                final_content = self.process_citations(text_content, annotations)
+                                
+                                if return_response:
+                                    print("🐛 DEBUG: ✅ Returning response")
+                                    return final_content
+                                else:
+                                    print(f"\n🤖 Assistant:\n{final_content}\n")
+                                    print("🐛 DEBUG: ✅ Response printed")
+                                    return final_content
+            else:
+                print(f"❌ Run failed with status: {run.status}")
+                print(f"🐛 DEBUG: ❌ Run failed with status: {run.status}")
     def interactive_mode(self) -> None:
         """Interactive question-answer mode"""
         print("\n💬 Interactive mode - Type 'exit' to quit\n")
@@ -2050,11 +2070,18 @@ class AKSWikiAssistant:
             run = self.client.beta.threads.runs.create(
                 thread_id=thread.id,
                 assistant_id=self.assistant_id,
-                instructions="""You are an expert in AKS (Azure Kubernetes Service) support. 
-                Provide a comprehensive, technically accurate response to this customer question.
-                Use the documentation to provide specific guidance and actionable steps.
-                Include relevant references and be professional in your tone.
-                Format your response as plain text suitable for email, do not give any markdown formatting at all.""",
+                instructions="""You are a Microsoft Azure Kubernetes Service (AKS) support engineer. 
+
+Write a professional technical response:
+
+- Use direct, technical language
+- Provide specific steps, commands, or links  
+- Include relevant AKS documentation references
+- Structure as clear technical guidance
+- No conversational AI phrases
+- Professional tone like an expert engineer
+
+Format: Technical explanation, specific steps, relevant links.""",
                 tools=[{"type": "file_search"}],
                 stream=True
             )

@@ -20,6 +20,7 @@ assistant = None
 grader = None
 tester = None
 prd_agent = None
+# Replace the entire initialize_components function
 
 def initialize_components():
     global assistant, grader, tester, prd_agent
@@ -30,21 +31,30 @@ def initialize_components():
         tester = AKSResponseTester(assistant, grader)
         prd_agent = PRDAgent()
         
-        # Load existing vector store and assistant
+        # Load existing vector store and assistant IDs (like the old working version)
         if os.path.exists("vector_store_id.json"):
             with open("vector_store_id.json", 'r') as f:
                 assistant.vector_store_id = json.load(f)["vector_store_id"]
+                print(f"✅ Loaded vector store: {assistant.vector_store_id}")
+        else:
+            print("❌ No vector_store_id.json found")
+            return False
         
         if os.path.exists("assistant_id.json"):
             with open("assistant_id.json", 'r') as f:
                 assistant.assistant_id = json.load(f)["assistant_id"]
+                print(f"✅ Loaded assistant: {assistant.assistant_id}")
+        else:
+            print("❌ No assistant_id.json found")
+            return False
         
         print("✅ Components initialized successfully")
         return True
     except Exception as e:
         print(f"❌ Error initializing components: {e}")
+        import traceback
+        traceback.print_exc()
         return False
-
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "AKSAI Hub API is running"})
@@ -333,9 +343,9 @@ def create_prd():
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
         
-        # Check if Azure OpenAI is configured
-        if not os.environ.get("AZURE_OPENAI_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
-            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
+        # Fix: Change AZURE_OPENAI_KEY to AZURE_OPENAI_API_KEY to match .env file
+        if not os.environ.get("AZURE_OPENAI_API_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
         
         result = prd_agent.create_prd(prompt, context, data_sources)
         
@@ -350,6 +360,7 @@ def create_prd():
     except Exception as e:
         print(f"Error creating PRD: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
 
 @app.route('/api/prd/continue-generation', methods=['POST'])
 def continue_prd_generation():
@@ -377,6 +388,56 @@ def continue_prd_generation():
     
     return Response(generate(), mimetype="text/event-stream")
 
+@app.route('/api/suggest-assignees', methods=['POST'])
+def suggest_assignees():
+    try:
+        data = request.json
+        question = data.get('question', '')
+        context = data.get('context', '')
+        
+        if not question:
+            return jsonify({"error": "Question is required"}), 400
+        
+        # Initialize components if not already done
+        if not assistant:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        
+        # Create a specific prompt to find relevant team members
+
+        assignee_prompt = f"""Search the AKS documentation for team members or domain experts who should handle this customer inquiry.
+
+Question: {question}
+Context: {context}
+
+Provide ONLY a clean list in this exact format:
+**Name** (alias@microsoft.com) - Area of expertise
+
+Example:
+**John Smith** (jsmith@microsoft.com) - AKS Networking and CNI
+**Sarah Jones** (sajones@microsoft.com) - AKS Storage and Persistent Volumes
+
+Focus on finding 2-3 most relevant experts based on the technical domain of the question."""
+        def generate():
+            yield "data: {\"status\": \"starting\"}\n\n"
+            
+            try:
+                # Use the assistant to find relevant assignees
+                for chunk in assistant.ask_question(assignee_prompt, stream=True):
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+                
+                yield "data: {\"status\": \"complete\"}\n\n"
+                
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return Response(generate(), mimetype='text/event-stream')
+    
+    except Exception as e:
+        print(f"❌ Error suggesting assignees: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    
 @app.route('/api/prd/review', methods=['POST'])
 def review_prd():
     try:
@@ -390,16 +451,19 @@ def review_prd():
         if not prd_text:
             return jsonify({"error": "PRD text is required"}), 400
         
-        # Check if Azure OpenAI is configured
-        if not os.environ.get("AZURE_OPENAI_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
-            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
+        # Check if Azure OpenAI is configured (fixed the key name)
+        if not os.environ.get("AZURE_OPENAI_API_KEY") or not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+            return jsonify({"error": "Azure OpenAI not configured. Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT environment variables."}), 500
         
         result = prd_agent.review_prd(prd_text)
         
         if result.get("success"):
             return jsonify({
-                "review": result["review"],
+                "summary": result["review"],  # ← Changed from "review" to "summary"
+                "comments": result.get("comments", []),
                 "score": result["score"],
+                "recommendations": "Based on the analysis above, focus on adding missing technical details and improving section completeness.",
+                "full_content": result["review"],
                 "message": "PRD reviewed successfully"
             })
         else:
@@ -408,6 +472,30 @@ def review_prd():
     except Exception as e:
         print(f"Error reviewing PRD: {str(e)}")
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+    
+@app.route('/api/prd/review-stream', methods=['POST'])
+def review_prd_stream():
+    try:
+        data = request.json
+        prd_text = data.get('prd_text', '')
+        
+        if not prd_text:
+            return jsonify({"error": "PRD text is required"}), 400
+        
+        if not prd_agent:
+            if not initialize_components():
+                return jsonify({"error": "Failed to initialize components"}), 500
+        
+        def generate():
+            try:
+                for chunk in prd_agent.review_prd_stream(prd_text):
+                    yield f"data: {json.dumps(chunk)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return Response(generate(), mimetype='text/event-stream')
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     
 if __name__ == '__main__':
     # Initialize components on startup

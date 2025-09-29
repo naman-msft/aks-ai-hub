@@ -41,6 +41,13 @@ interface Section {
   editContent?: string;
 }
 
+interface ReviewComment {
+  section: string;
+  comment: string;
+  suggestion: string;
+  line_number?: number;
+}
+
 const preprocessMarkdown = (content: string): string => {
   const lines = content.split('\n');
   const processedLines: string[] = [];
@@ -174,6 +181,11 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
   const [generationMode, setGenerationMode] = useState<'auto' | 'manual'>('auto'); // Add this
   const [waitingForApproval, setWaitingForApproval] = useState(false); // Add this
+  const [reviewComments, setReviewComments] = useState<ReviewComment[]>([]);
+  const [reviewResult, setReviewResult] = useState<any>(null);
+  const [isStreamingReview, setIsStreamingReview] = useState(false);
+  const [streamingReviewContent, setStreamingReviewContent] = useState('');
+  const [parsedComments, setParsedComments] = useState<Array<{section: string, comment: string, lineRef: string}>>([]);
 
 
   // const createPRD = async () => {
@@ -450,9 +462,7 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
     let prdContent = '';
     
     if (reviewMode === 'file' && prdFile) {
-      // Read file content
-      const fileContent = await readFileContent(prdFile);
-      prdContent = fileContent;
+      prdContent = await readFileContent(prdFile);
     } else if (reviewMode === 'text' && prdText.trim()) {
       prdContent = prdText;
     } else {
@@ -460,32 +470,81 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
       return;
     }
 
-    setLoading(true);
+    setLoading(false);
+    setIsStreamingReview(true);
     setError(null);
+    setReviewComments([]);
+    setReviewResult(null);
+    setStreamingReviewContent('');
+    setParsedComments([]);
+    setStep('review');
 
     try {
-      const response = await fetch('/api/prd/review', {
+      const response = await fetch('/api/prd/review-stream', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prd_text: prdContent
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prd_text: prdContent, context: 'AKS PRD review' }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to review PRD');
-      }
+      if (!response.ok) throw new Error('Failed to review PRD');
 
-      const data = await response.json();
-      setResult(data);
-      setStep('review');
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.content) {
+                  fullContent += data.content;
+                  setStreamingReviewContent(fullContent);
+                  
+                  // Parse comments as they come in
+                  const comments = parseCommentsFromContent(fullContent, prdContent);
+                  setParsedComments(comments);
+                }
+                
+                if (data.status === 'complete') {
+                  setIsStreamingReview(false);
+                  setReviewResult({
+                    summary: fullContent,
+                    comments: parseCommentsFromContent(fullContent, prdContent),
+                    score: calculateQuickScore(fullContent)
+                  });
+                  return; // Exit the function successfully
+                }
+                
+                if (data.error) {
+                  throw new Error(data.error);
+                }
+              } catch (e) {
+                // Skip malformed JSON lines
+                console.warn('Failed to parse streaming data:', e);
+              }
+            }
+          }
+        }
+        
+        // Fallback if no 'complete' status was received
+        setIsStreamingReview(false);
+        setReviewResult({
+          summary: fullContent,
+          comments: parseCommentsFromContent(fullContent, prdContent),
+          score: calculateQuickScore(fullContent)
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to review PRD');
-    } finally {
-      setLoading(false);
+      setIsStreamingReview(false);
     }
   };
 
@@ -507,6 +566,44 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
       status: 'ready'
     };
     setDataSources([...dataSources, newSource]);
+  };
+
+  const calculateQuickScore = (content: string): number => {
+    let score = 50;
+    if (content.length > 1000) score += 20;
+    if (content.includes('requirements')) score += 10;
+    if (content.includes('timeline')) score += 10;
+    if (content.includes('metrics')) score += 10;
+    return Math.min(score, 100);
+  };
+    
+  const parseCommentsFromContent = (content: string, originalPRD: string): Array<{section: string, comment: string, lineRef: string, lineIndex: number}> => {
+    const comments: Array<{section: string, comment: string, lineRef: string, lineIndex: number}> = [];
+    const lines = originalPRD.split('\n');
+    const sections = content.split('**Section:').slice(1);
+    
+    sections.forEach(section => {
+      const [title, ...rest] = section.split('\n');
+      const sectionTitle = title.replace(/\*\*/g, '').trim();
+      const commentText = rest.join('\n');
+      
+      // Find line reference in original document
+      const lineIndex = lines.findIndex(line => 
+        line.toLowerCase().includes(sectionTitle.toLowerCase()) ||
+        sectionTitle.toLowerCase().includes(line.toLowerCase().trim())
+      );
+      
+      if (commentText.trim()) {
+        comments.push({
+          section: sectionTitle,
+          comment: commentText.trim(),
+          lineRef: lineIndex >= 0 ? `Line ${lineIndex + 1}` : 'General',
+          lineIndex: lineIndex >= 0 ? lineIndex : -1
+        });
+      }
+    });
+    
+    return comments;
   };
 
   const removeDataSource = (id: string) => {
@@ -1144,8 +1241,8 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
             </div>
           )}
 
-          {/* Review PRD Step */}
-          {step === 'review' && (
+          {/* Review PRD Input */}
+          {step === 'review' && mode === 'review' && !reviewResult && (
             <div className="bg-white rounded-lg shadow-lg p-8">
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-2xl font-bold">Review Existing PRD</h3>
@@ -1156,140 +1253,209 @@ const PRDAgent: React.FC<PRDAgentProps> = ({ onBack }) => {
                   ← Back to Selection
                 </button>
               </div>
-              
-              <div className="space-y-6">
-                {/* Review Mode Selection */}
-                <div className="flex space-x-4 mb-6">
-                  <button
-                    onClick={() => setReviewMode('text')}
-                    className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                      reviewMode === 'text' 
-                        ? 'bg-blue-600 text-white' 
-                        : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                    }`}
-                  >
-                    <FileText className="h-5 w-5 mr-2" />
-                    Paste Text
-                  </button>
-                  <button
-                    onClick={() => setReviewMode('file')}
-                    className={`flex items-center px-4 py-2 rounded-lg transition-colors ${
-                      reviewMode === 'file' 
-                        ? 'bg-blue-600 text-white' 
-                        : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                    }`}
-                  >
-                    <Upload className="h-5 w-5 mr-2" />
-                    Upload File
-                  </button>
-                </div>
 
-                {/* Text Input Mode */}
-                {reviewMode === 'text' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Paste your PRD text here
-                    </label>
-                    <textarea
-                      value={prdText}
-                      onChange={(e) => setPrdText(e.target.value)}
-                      placeholder="Paste your existing PRD content here..."
-                      className="w-full h-48 p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              <p className="text-gray-600 mb-6">
+                Paste your PRD content or upload a file to get AI-powered feedback and suggestions for improvement.
+              </p>
+
+              {/* Review Mode Toggle */}
+              <div className="mb-6">
+                <div className="flex space-x-4 mb-4">
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="radio"
+                      value="text"
+                      checked={reviewMode === 'text'}
+                      onChange={(e) => setReviewMode('text')}
+                      className="mr-2"
                     />
-                  </div>
-                )}
-
-                {/* File Upload Mode */}
-                {reviewMode === 'file' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Upload your PRD document
-                    </label>
-                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-                      <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                      <p className="text-sm text-gray-600 mb-4">
-                        {prdFile ? `Selected: ${prdFile.name}` : 'Select a PRD file to upload'}
-                      </p>
-                      <input
-                        type="file"
-                        accept=".txt,.doc,.docx,.pdf,.md"
-                        onChange={(e) => setPrdFile(e.target.files?.[0] || null)}
-                        className="hidden"
-                        id="prd-file-upload"
-                      />
-                      <label
-                        htmlFor="prd-file-upload"
-                        className="inline-block px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer transition-colors"
-                      >
-                        Choose File
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <p className="text-red-700">{error}</p>
-                  </div>
-                )}
-
-                <button
-                  onClick={reviewPRD}
-                  disabled={loading || (reviewMode === 'text' && !prdText.trim()) || (reviewMode === 'file' && !prdFile)}
-                  className="w-full flex items-center justify-center px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                      Reviewing PRD...
-                    </>
-                  ) : (
-                    <>
-                      <MessageSquare className="h-5 w-5 mr-2" />
-                      Review PRD
-                    </>
-                  )}
-                </button>
+                    <span className="text-sm font-medium">Paste Text</span>
+                  </label>
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="radio"
+                      value="file"
+                      checked={reviewMode === 'file'}
+                      onChange={(e) => setReviewMode('file')}
+                      className="mr-2"
+                    />
+                    <span className="text-sm font-medium">Upload File</span>
+                  </label>
+                </div>
               </div>
 
-              {/* Review Result */}
-              {result && result.review && (
-                <div className="mt-8 border-t pt-8">
-                  <div className="flex items-center justify-between mb-6">
-                    <h4 className="text-xl font-bold text-green-700">✅ PRD Review Complete!</h4>
-                    <div className="flex items-center space-x-3">
-                      {result.score && (
-                        <div className="text-sm">
-                          <span className="font-medium">Quality Score: </span>
-                          <span className={`font-bold text-lg ${result.score >= 80 ? 'text-green-600' : result.score >= 60 ? 'text-yellow-600' : 'text-red-600'}`}>
-                            {result.score}/100
-                          </span>
-                        </div>
-                      )}
-                      <button
-                        onClick={() => copyToClipboard(result.review)}
-                        className="flex items-center px-4 py-2 text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
-                      >
-                        <Copy className="h-4 w-4 mr-2" />
-                        Copy Review
-                      </button>
-                      <button
-                        onClick={() => {
-                          resetForm();
-                          setStep('select');
-                        }}
-                        className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        Review Another
-                      </button>
-                    </div>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-6 max-h-96 overflow-y-auto">
-                    <pre className="whitespace-pre-wrap text-sm font-mono">{result.review}</pre>
+              {/* Text Input Mode */}
+              {reviewMode === 'text' && (
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    PRD Content
+                  </label>
+                  <textarea
+                    value={prdText}
+                    onChange={(e) => setPrdText(e.target.value)}
+                    placeholder="Paste your PRD content here..."
+                    className="w-full h-64 p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+              )}
+
+              {/* File Upload Mode */}
+              {reviewMode === 'file' && (
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Upload PRD File
+                  </label>
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                    <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                    <p className="text-sm text-gray-600 mb-4">
+                      Upload your PRD document (.txt, .doc, .docx, .md)
+                    </p>
+                    <input
+                      type="file"
+                      accept=".txt,.doc,.docx,.pdf,.md"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setPrdFile(file);
+                        }
+                      }}
+                      className="hidden"
+                      id="prd-file-upload"
+                    />
+                    <label
+                      htmlFor="prd-file-upload"
+                      className="inline-block px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer transition-colors"
+                    >
+                      Choose File
+                    </label>
+                    {prdFile && (
+                      <p className="mt-2 text-sm text-green-600">
+                        Selected: {prdFile.name}
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
+
+              {/* Error Display */}
+              {error && (
+                <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+                  <p className="text-red-700">{error}</p>
+                </div>
+              )}
+
+              {/* Review Button */}
+              <button
+                onClick={reviewPRD}
+                disabled={loading || isStreamingReview || (!prdText.trim() && !prdFile)}
+                className="w-full flex items-center justify-center px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isStreamingReview ? (
+                  <>
+                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                    Analyzing PRD...
+                  </>
+                ) : (
+                  <>
+                    <MessageSquare className="h-5 w-5 mr-2" />
+                    Review PRD
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+          {/* Review Results */}
+          {step === 'review' && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-7xl mx-auto">
+              {/* Document Panel */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                    <FileText className="w-5 h-5 mr-2" />
+                    Document
+                  </h3>
+                  <button
+                    onClick={() => setStep('select')}
+                    className="flex items-center px-3 py-1 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                  >
+                    <ArrowLeft className="w-4 h-4 mr-1" />
+                    Back
+                  </button>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-4 max-h-[600px] overflow-y-auto border">
+                  <div className="prose prose-sm max-w-none text-gray-800 leading-relaxed">
+                    <ReactMarkdown 
+                      remarkPlugins={[remarkGfm]}
+                    >
+                      {reviewMode === 'text' ? prdText : prdFile ? 'File uploaded for review' : 'No content provided'}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              </div>
+
+              {/* Comments Panel */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                    <MessageSquare className="w-5 h-5 mr-2" />
+                    Review Comments
+                    {isStreamingReview && (
+                      <Loader2 className="w-4 h-4 ml-2 animate-spin text-blue-600" />
+                    )}
+                  </h3>
+                  {streamingReviewContent && (
+                    <button
+                      onClick={() => copyToClipboard(streamingReviewContent)}
+                      className="flex items-center px-3 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 text-sm"
+                    >
+                      <Copy className="w-4 h-4 mr-1" />
+                      Copy
+                    </button>
+                  )}
+                </div>
+                <div className="bg-blue-50 rounded-lg p-4 max-h-[600px] overflow-y-auto border border-blue-200">
+                  {isStreamingReview && !streamingReviewContent && (
+                    <div className="flex items-center text-blue-600">
+                      <Loader2 className="w-4 w-4 mr-2 animate-spin" />
+                      <span className="text-sm">Starting review analysis...</span>
+                    </div>
+                  )}
+                  {streamingReviewContent && (
+                    <div className="prose prose-sm max-w-none text-gray-800 leading-relaxed">
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          h1: ({children}) => <h1 className="text-xl font-bold text-blue-800 mb-3">{children}</h1>,
+                          h2: ({children}) => <h2 className="text-lg font-semibold text-blue-700 mb-2 mt-4">{children}</h2>,
+                          h3: ({children}) => <h3 className="text-base font-medium text-blue-600 mb-2 mt-3">{children}</h3>,
+                          strong: ({children}) => <strong className="font-semibold text-gray-900">{children}</strong>,
+                          p: ({children}) => <p className="mb-3 text-gray-700 leading-relaxed">{children}</p>,
+                          ul: ({children}) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
+                          li: ({children}) => <li className="text-gray-700">{children}</li>
+                        }}
+                      >
+                        {streamingReviewContent}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                  {!isStreamingReview && !streamingReviewContent && !reviewResult && (
+                    <p className="text-gray-500 text-center py-8">Review will appear here...</p>
+                  )}
+                </div>
+                
+                {/* Action Buttons */}
+                {streamingReviewContent && !isStreamingReview && (
+                  <div className="flex space-x-3 mt-4">
+                    <button
+                      onClick={resetForm}
+                      className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
+                    >
+                      <Plus className="w-4 h-4 mr-1" />
+                      Review Another PRD
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

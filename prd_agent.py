@@ -16,6 +16,7 @@ import requests
 from azure.ai.projects import AIProjectClient
 from azure.ai.agents.models import MessageRole, BingGroundingTool
 from azure.identity import DefaultAzureCredential
+import re
 # Load environment variables from .env file
 load_dotenv()
 
@@ -47,6 +48,90 @@ class PRDAgent:
         
         print("🐛 DEBUG: ✅ PRDAgent initialization complete")
 
+    def review_prd(self, prd_text: str) -> Dict:
+        """Review an existing PRD and provide feedback with section-specific comments"""
+        try:
+            system_prompt = """
+            You are an expert PRD reviewer for Azure Kubernetes Service (AKS).
+            Review the provided PRD and give detailed feedback with specific comments.
+            
+            Structure your response as follows:
+            1. Overall Summary (2-3 sentences)
+            2. Section-by-Section Comments (for each identifiable section, provide specific feedback)
+            3. Recommendations for improvement
+            
+            For section comments, format like:
+            **Section: [Section Name]**
+            - Comment: [Specific feedback]
+            - Suggestion: [Specific improvement]
+            
+            Provide feedback on:
+            - Completeness and detail level
+            - Technical accuracy for AKS
+            - Clarity and structure
+            - Missing information
+            - Alignment with AKS best practices
+            """
+            
+            response = self.client.chat.completions.create(
+                model=os.getenv("AZURE_OPENAI_MODEL_PRD"),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Review this PRD:\n\n{prd_text}"}
+                ]
+            )
+            
+            review_content = response.choices[0].message.content
+            
+            # Parse the review to extract section-specific comments
+            comments = self._parse_review_comments(review_content, prd_text)
+            
+            return {
+                "success": True,
+                "review": review_content,
+                "comments": comments,
+                "score": self._calculate_prd_score(prd_text),
+                "message": "PRD reviewed successfully"
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def _parse_review_comments(self, review_content: str, original_text: str) -> List[Dict]:
+        """Parse review content to extract section-specific comments"""
+        comments = []
+        
+        # Split review into sections based on **Section:** markers
+        import re
+        section_pattern = r'\*\*Section:\s*([^*]+)\*\*\s*\n(.*?)(?=\*\*Section:|$)'
+        matches = re.findall(section_pattern, review_content, re.DOTALL)
+        
+        for section_name, comment_text in matches:
+            section_name = section_name.strip()
+            
+            # Extract comment and suggestion from the text
+            comment_lines = [line.strip() for line in comment_text.split('\n') if line.strip()]
+            comment = ""
+            suggestion = ""
+            
+            for line in comment_lines:
+                if line.startswith('- Comment:'):
+                    comment = line.replace('- Comment:', '').strip()
+                elif line.startswith('- Suggestion:'):
+                    suggestion = line.replace('- Suggestion:', '').strip()
+            
+            if comment or suggestion:
+                comments.append({
+                    "section": section_name,
+                    "comment": comment,
+                    "suggestion": suggestion
+                })
+        
+        return comments
+    
     def search_wiki(self, query: str) -> str:
         """Search internal wiki using the AKSWikiAssistant - using the working pattern from aks.py"""
         if not self.wiki_assistant:
@@ -335,6 +420,43 @@ class PRDAgent:
                 "error": str(e)
             }
     
+    def review_prd_stream(self, prd_text: str):
+        """Stream PRD review with real-time feedback generation"""
+        try:
+            system_prompt = """You are an expert PRD reviewer for Azure Kubernetes Service (AKS).
+            
+    Review the provided PRD and provide detailed feedback. Structure your response as:
+
+    1. **Overall Summary** - Brief assessment
+    2. **Section-by-Section Comments** - For each section found, provide:
+    - **Section: [Name]** (Line X-Y)
+    - Comment: [Specific feedback]
+    - Suggestion: [Improvement recommendation]
+    3. **Final Recommendations**
+
+    Focus on: completeness, technical accuracy, clarity, AKS best practices."""
+
+            response = self.client.chat.completions.create(
+                model=self.prd_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Review this PRD:\n\n{prd_text}"}
+                ],
+                stream=True
+            )
+            
+            content = ""
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    delta = chunk.choices[0].delta.content
+                    content += delta
+                    yield {"content": delta, "status": "streaming"}
+            
+            yield {"status": "complete", "full_content": content}
+            
+        except Exception as e:
+            yield {"error": str(e), "status": "error"}
+            
     def generate_prd_section(self, section_id: str, context: Dict, previous_sections: Dict = None) -> str:
         """Generate a single PRD section"""
         # Load sections configuration
